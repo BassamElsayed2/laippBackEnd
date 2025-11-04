@@ -1,0 +1,57 @@
+{
+  "name": "lapip-backend",
+  "version": "1.0.0",
+  "description": "Backend API for Lapip Store using Node.js, Express, SQL Server and Better Auth",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "nodemon src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "migrate": "ts-node src/scripts/migrate-data.ts",
+    "create-admin": "ts-node src/scripts/create-admin-user.ts",
+    "quick-setup": "ts-node src/scripts/quick-setup-admin.ts",
+    "create-admin-simple": "node create-admin-simple.js",
+    "fix-profiles": "ts-node src/scripts/create-missing-profiles.ts",
+    "fix-admin-profile": "ts-node src/scripts/fix-admin-profile.ts",
+    "update-products-table": "sqlcmd -S localhost -d lapipDb -E -i src/scripts/update-products-table.sql"
+  },
+  "keywords": [
+    "express",
+    "sql-server",
+    "better-auth",
+    "ecommerce"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.55.0",
+    "axios": "^1.6.5",
+    "bcryptjs": "^2.4.3",
+    "better-auth": "^1.0.1",
+    "cookie-parser": "^1.4.6",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "express-rate-limit": "^7.1.5",
+    "helmet": "^7.1.0",
+    "joi": "^17.11.0",
+    "jsonwebtoken": "^9.0.2",
+    "mssql": "^10.0.2",
+    "multer": "^1.4.5-lts.1",
+    "uuid": "^11.1.0"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/cookie-parser": "^1.4.10",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/mssql": "^9.1.8",
+    "@types/multer": "^1.4.11",
+    "@types/node": "^20.10.6",
+    "nodemon": "^3.0.2",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
+  }
+}
+

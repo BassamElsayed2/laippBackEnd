@@ -33,7 +33,13 @@ const corsOptions = {
   credentials: true,
   optionsSuccessStatus: 200,
 };
-app.use(cors(corsOptions));
+// app.use(cors(corsOptions));
+app.use(
+  cors({
+    origin: ["https://lapipstore.ens.eg", "https://lapipstore.ens.eg"],
+    credentials: true,
+  })
+);
 
 // Rate limiting
 const limiter = rateLimit({

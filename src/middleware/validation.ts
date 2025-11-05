@@ -150,7 +150,7 @@ export const createBlogSchema = Joi.object({
   content_ar: Joi.string().optional(),
   content_en: Joi.string().optional(),
   images: Joi.array().items(Joi.string().uri()).optional(),
-  yt_code: Joi.string().optional(),
+  yt_code: Joi.string().optional().allow('', null),
   author: Joi.string().optional(),
   status: Joi.string().valid('draft', 'published').default('published'),
 });

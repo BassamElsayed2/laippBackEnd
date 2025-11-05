@@ -10,6 +10,10 @@ import {
   updateBlog,
   deleteBlog,
   getTestimonials,
+  getTestimonialById,
+  createTestimonial,
+  updateTestimonial,
+  deleteTestimonial,
   getBranches,
   getNews,
 } from '../controllers/contentController';
@@ -33,6 +37,10 @@ router.delete('/blogs/:id', authenticate, requireAdmin, deleteBlog);
 
 // Testimonials
 router.get('/testimonials', getTestimonials);
+router.get('/testimonials/:id', getTestimonialById);
+router.post('/testimonials', authenticate, requireAdmin, validate(createTestimonialSchema), createTestimonial);
+router.put('/testimonials/:id', authenticate, requireAdmin, updateTestimonial);
+router.delete('/testimonials/:id', authenticate, requireAdmin, deleteTestimonial);
 
 // Branches
 router.get('/branches', getBranches);

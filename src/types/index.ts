@@ -151,6 +151,8 @@ export interface Blog {
   content_ar?: string;
   content_en?: string;
   image?: string;
+  images?: string[];
+  yt_code?: string;
   author?: string;
   status: 'draft' | 'published';
   created_at: Date;

@@ -297,17 +297,226 @@ export const getTestimonials = async (
   next: NextFunction
 ) => {
   try {
+    const { page = 1, limit = 10, search, date, status } = req.query;
     const pool = getPool();
 
+    const offset = (Number(page) - 1) * Number(limit);
+    let whereConditions: string[] = [];
+
+    // Search filter
+    if (search) {
+      whereConditions.push(`(name_ar LIKE '%${search}%' OR name_en LIKE '%${search}%' OR message_ar LIKE '%${search}%' OR message_en LIKE '%${search}%')`);
+    }
+
+    // Date filter
+    if (date) {
+      const now = new Date();
+      let startDate: Date;
+      
+      switch (date) {
+        case 'today':
+          startDate = new Date(now.setHours(0, 0, 0, 0));
+          break;
+        case 'week':
+          startDate = new Date(now.setDate(now.getDate() - 7));
+          break;
+        case 'month':
+          startDate = new Date(now.setMonth(now.getMonth() - 1));
+          break;
+        case 'year':
+          startDate = new Date(now.setFullYear(now.getFullYear() - 1));
+          break;
+        default:
+          startDate = new Date(0);
+      }
+      whereConditions.push(`created_at >= '${startDate.toISOString()}'`);
+    }
+
+    const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
+
+    // Get total count
+    const countResult = await pool.request().query(`
+      SELECT COUNT(*) as total FROM testimonials ${whereClause}
+    `);
+    const total = countResult.recordset[0].total;
+
+    // Get paginated data
     const result = await pool.request().query(`
       SELECT *
       FROM testimonials
+      ${whereClause}
       ORDER BY created_at DESC
+      OFFSET ${offset} ROWS
+      FETCH NEXT ${limit} ROWS ONLY
     `);
 
     res.json({
       success: true,
       data: result.recordset,
+      pagination: {
+        total,
+        totalPages: Math.ceil(total / Number(limit)),
+        page: Number(page),
+        limit: Number(limit),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Get testimonial by ID
+ */
+export const getTestimonialById = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const { id } = req.params;
+    const pool = getPool();
+
+    const result = await pool
+      .request()
+      .input('id', sql.Int, id)
+      .query(`
+        SELECT *
+        FROM testimonials
+        WHERE id = @id
+      `);
+
+    if (result.recordset.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Testimonial not found',
+      });
+    }
+
+    res.json({
+      success: true,
+      data: result.recordset[0],
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Create testimonial (Admin only)
+ */
+export const createTestimonial = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const { name_ar, name_en, message_ar, message_en, image } = req.body;
+    const pool = getPool();
+
+    const result = await pool
+      .request()
+      .input('name_ar', sql.NVarChar(sql.MAX), name_ar || null)
+      .input('name_en', sql.NVarChar(sql.MAX), name_en || null)
+      .input('message_ar', sql.NVarChar(sql.MAX), message_ar || null)
+      .input('message_en', sql.NVarChar(sql.MAX), message_en || null)
+      .input('image', sql.NVarChar(sql.MAX), image || null)
+      .query(`
+        INSERT INTO testimonials (name_ar, name_en, message_ar, message_en, image)
+        OUTPUT INSERTED.*
+        VALUES (@name_ar, @name_en, @message_ar, @message_en, @image)
+      `);
+
+    res.status(201).json({
+      success: true,
+      data: result.recordset[0],
+      message: 'Testimonial created successfully',
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Update testimonial (Admin only)
+ */
+export const updateTestimonial = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const { id } = req.params;
+    const { name_ar, name_en, message_ar, message_en, image } = req.body;
+    const pool = getPool();
+
+    const result = await pool
+      .request()
+      .input('id', sql.Int, id)
+      .input('name_ar', sql.NVarChar(sql.MAX), name_ar)
+      .input('name_en', sql.NVarChar(sql.MAX), name_en)
+      .input('message_ar', sql.NVarChar(sql.MAX), message_ar)
+      .input('message_en', sql.NVarChar(sql.MAX), message_en)
+      .input('image', sql.NVarChar(sql.MAX), image)
+      .query(`
+        UPDATE testimonials
+        SET 
+          name_ar = COALESCE(@name_ar, name_ar),
+          name_en = COALESCE(@name_en, name_en),
+          message_ar = COALESCE(@message_ar, message_ar),
+          message_en = COALESCE(@message_en, message_en),
+          image = COALESCE(@image, image)
+        OUTPUT INSERTED.*
+        WHERE id = @id
+      `);
+
+    if (result.recordset.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Testimonial not found',
+      });
+    }
+
+    res.json({
+      success: true,
+      data: result.recordset[0],
+      message: 'Testimonial updated successfully',
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Delete testimonial (Admin only)
+ */
+export const deleteTestimonial = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const { id } = req.params;
+    const pool = getPool();
+
+    const result = await pool
+      .request()
+      .input('id', sql.Int, id)
+      .query(`
+        DELETE FROM testimonials
+        WHERE id = @id
+      `);
+
+    if (result.rowsAffected[0] === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Testimonial not found',
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Testimonial deleted successfully',
     });
   } catch (error) {
     next(error);

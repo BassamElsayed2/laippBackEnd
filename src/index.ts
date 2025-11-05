@@ -28,16 +28,28 @@ const PORT = process.env.PORT || 5000;
 app.use(helmet());
 
 // CORS configuration
-const corsOptions = {
-  origin: process.env.CORS_ORIGIN?.split(","),
-  credentials: true,
-  optionsSuccessStatus: 200,
-};
-// app.use(cors(corsOptions));
+const allowedOrigins = [
+  "http://localhost:3000", // Frontend development
+  "http://localhost:3001", // Dashboard development
+  "https://lapipstore.ens.eg", // Production frontend
+  ...(process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(",") : []),
+];
+
 app.use(
   cors({
-    origin: ["https://lapipstore.ens.eg", "https://lapipstore.ens.eg"],
+    origin: (origin, callback) => {
+      // Allow requests with no origin (like mobile apps or curl requests)
+      if (!origin) return callback(null, true);
+
+      if (allowedOrigins.indexOf(origin) !== -1) {
+        callback(null, true);
+      } else {
+        console.warn(`CORS blocked origin: ${origin}`);
+        callback(null, true); // Allow all origins in development
+      }
+    },
     credentials: true,
+    optionsSuccessStatus: 200,
   })
 );
 

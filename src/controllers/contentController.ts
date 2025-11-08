@@ -550,6 +550,135 @@ export const getBranches = async (
 };
 
 /**
+ * Create branch (Admin only)
+ */
+export const createBranch = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const { name_ar, name_en, area_ar, area_en, address_ar, address_en, phone, google_map, image, works_hours } = req.body;
+    const pool = getPool();
+
+    const result = await pool
+      .request()
+      .input('name_ar', sql.NVarChar(255), name_ar || null)
+      .input('name_en', sql.NVarChar(255), name_en || null)
+      .input('area_ar', sql.NVarChar(255), area_ar || null)
+      .input('area_en', sql.NVarChar(255), area_en || null)
+      .input('address_ar', sql.NVarChar(500), address_ar || null)
+      .input('address_en', sql.NVarChar(500), address_en || null)
+      .input('phone', sql.NVarChar(50), phone || null)
+      .input('google_map', sql.NVarChar(sql.MAX), google_map || null)
+      .input('image', sql.NVarChar(sql.MAX), image || null)
+      .input('works_hours', sql.NVarChar(255), works_hours || null)
+      .query(`
+        INSERT INTO branches (name_ar, name_en, area_ar, area_en, address_ar, address_en, phone, google_map, image, works_hours)
+        OUTPUT INSERTED.*
+        VALUES (@name_ar, @name_en, @area_ar, @area_en, @address_ar, @address_en, @phone, @google_map, @image, @works_hours)
+      `);
+
+    res.status(201).json({
+      success: true,
+      data: result.recordset[0],
+      message: 'Branch created successfully',
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Update branch (Admin only)
+ */
+export const updateBranch = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const { id } = req.params;
+    const { name_ar, name_en, area_ar, area_en, address_ar, address_en, phone, google_map, image, works_hours } = req.body;
+    const pool = getPool();
+
+    const result = await pool
+      .request()
+      .input('id', sql.Int, parseInt(id))
+      .input('name_ar', sql.NVarChar(255), name_ar || null)
+      .input('name_en', sql.NVarChar(255), name_en || null)
+      .input('area_ar', sql.NVarChar(255), area_ar || null)
+      .input('area_en', sql.NVarChar(255), area_en || null)
+      .input('address_ar', sql.NVarChar(500), address_ar || null)
+      .input('address_en', sql.NVarChar(500), address_en || null)
+      .input('phone', sql.NVarChar(50), phone || null)
+      .input('google_map', sql.NVarChar(sql.MAX), google_map || null)
+      .input('image', sql.NVarChar(sql.MAX), image || null)
+      .input('works_hours', sql.NVarChar(255), works_hours || null)
+      .query(`
+        UPDATE branches
+        SET name_ar = @name_ar,
+            name_en = @name_en,
+            area_ar = @area_ar,
+            area_en = @area_en,
+            address_ar = @address_ar,
+            address_en = @address_en,
+            phone = @phone,
+            google_map = @google_map,
+            image = @image,
+            works_hours = @works_hours
+        OUTPUT INSERTED.*
+        WHERE id = @id
+      `);
+
+    if (result.recordset.length === 0) {
+      throw new ApiError(404, 'Branch not found');
+    }
+
+    res.json({
+      success: true,
+      data: result.recordset[0],
+      message: 'Branch updated successfully',
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Delete branch (Admin only)
+ */
+export const deleteBranch = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const { id } = req.params;
+    const pool = getPool();
+
+    const result = await pool
+      .request()
+      .input('id', sql.Int, parseInt(id))
+      .query(`
+        DELETE FROM branches
+        WHERE id = @id
+      `);
+
+    if (result.rowsAffected[0] === 0) {
+      throw new ApiError(404, 'Branch not found');
+    }
+
+    res.json({
+      success: true,
+      message: 'Branch deleted successfully',
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
  * Create blog (Admin only)
  */
 export const createBlog = async (

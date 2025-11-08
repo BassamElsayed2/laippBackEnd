@@ -15,10 +15,13 @@ import {
   updateTestimonial,
   deleteTestimonial,
   getBranches,
+  createBranch,
+  updateBranch,
+  deleteBranch,
   getNews,
 } from '../controllers/contentController';
 import { authenticate, requireAdmin, optionalAuth } from '../middleware/auth';
-import { validate, createBannerSchema, createBlogSchema, createTestimonialSchema } from '../middleware/validation';
+import { validate, createBannerSchema, createBlogSchema, createTestimonialSchema, createBranchSchema } from '../middleware/validation';
 
 const router = Router();
 
@@ -44,6 +47,9 @@ router.delete('/testimonials/:id', authenticate, requireAdmin, deleteTestimonial
 
 // Branches
 router.get('/branches', getBranches);
+router.post('/branches', authenticate, requireAdmin, validate(createBranchSchema), createBranch);
+router.put('/branches/:id', authenticate, requireAdmin, updateBranch);
+router.delete('/branches/:id', authenticate, requireAdmin, deleteBranch);
 
 // News
 router.get('/news', optionalAuth, getNews);

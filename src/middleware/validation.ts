@@ -163,6 +163,19 @@ export const createTestimonialSchema = Joi.object({
   image: Joi.string().uri().optional(),
 });
 
+export const createBranchSchema = Joi.object({
+  name_ar: Joi.string().optional(),
+  name_en: Joi.string().optional(),
+  area_ar: Joi.string().optional(),
+  area_en: Joi.string().optional(),
+  address_ar: Joi.string().optional(),
+  address_en: Joi.string().optional(),
+  phone: Joi.string().optional(),
+  google_map: Joi.string().optional().allow('', null),
+  image: Joi.string().uri().optional().allow('', null),
+  works_hours: Joi.string().optional().allow('', null),
+});
+
 // Address validation schemas
 export const createAddressSchema = Joi.object({
   street: Joi.string().required().messages({

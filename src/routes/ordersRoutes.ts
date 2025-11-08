@@ -3,7 +3,6 @@ import {
   createOrder,
   getUserOrders,
   getOrderById,
-  trackOrder,
   updateOrderStatus,
   getAllOrders,
 } from '../controllers/ordersController';
@@ -14,7 +13,6 @@ const router = Router();
 
 // Public routes
 router.post('/', validate(createOrderSchema), createOrder);
-router.get('/tracking/:id', trackOrder); // Public order tracking
 
 // Protected routes
 router.get('/my-orders', authenticate, getUserOrders);

@@ -109,7 +109,12 @@ export const createOrder = async (
         .query(`
           SELECT o.*,
                  (
-                   SELECT oi.*, p.title, p.price as product_price, p.images
+                   SELECT oi.*, 
+                          p.name_ar, 
+                          p.name_en, 
+                          p.name_ar as title, 
+                          p.price as product_price, 
+                          p.images
                    FROM order_items oi
                    INNER JOIN products p ON oi.product_id = p.id
                    WHERE oi.order_id = o.id
@@ -185,7 +190,12 @@ export const getUserOrders = async (
       .query(`
         SELECT o.*,
                (
-                 SELECT oi.*, p.title, p.price as product_price, p.images
+                 SELECT oi.*, 
+                        p.name_ar, 
+                        p.name_en, 
+                        p.name_ar as title,
+                        p.price as product_price, 
+                        p.images
                  FROM order_items oi
                  INNER JOIN products p ON oi.product_id = p.id
                  WHERE oi.order_id = o.id
@@ -243,7 +253,12 @@ export const getOrderById = async (
       .query(`
         SELECT o.*,
                (
-                 SELECT oi.*, p.title, p.name_ar, p.name_en, p.price as product_price, p.images
+                 SELECT oi.*, 
+                        p.name_ar, 
+                        p.name_en, 
+                        p.name_ar as title, 
+                        p.price as product_price, 
+                        p.images
                  FROM order_items oi
                  INNER JOIN products p ON oi.product_id = p.id
                  WHERE oi.order_id = o.id
@@ -275,60 +290,6 @@ export const getOrderById = async (
         throw new ApiError(403, 'Access denied');
       }
     }
-
-    res.json({
-      success: true,
-      data: order,
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-/**
- * Track order (public - no auth required)
- */
-export const trackOrder = async (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction
-) => {
-  try {
-    const { id } = req.params;
-    const pool = getPool();
-
-    const orderResult = await pool
-      .request()
-      .input('orderId', sql.UniqueIdentifier, id)
-      .query(`
-        SELECT o.id, o.status, o.total_price, o.created_at, o.updated_at,
-               o.customer_first_name, o.customer_last_name,
-               (
-                 SELECT oi.quantity, oi.price, p.title, p.name_ar, p.name_en, p.images
-                 FROM order_items oi
-                 INNER JOIN products p ON oi.product_id = p.id
-                 WHERE oi.order_id = o.id
-                 FOR JSON PATH
-               ) as order_items,
-               (
-                 SELECT payment_method, payment_status, created_at
-                 FROM payments
-                 WHERE order_id = o.id
-                 FOR JSON PATH
-               ) as payments
-        FROM orders o
-        WHERE o.id = @orderId
-      `);
-
-    if (orderResult.recordset.length === 0) {
-      throw new ApiError(404, 'Order not found');
-    }
-
-    const order = {
-      ...orderResult.recordset[0],
-      order_items: parseJSON(orderResult.recordset[0].order_items, []),
-      payments: parseJSON(orderResult.recordset[0].payments, []),
-    };
 
     res.json({
       success: true,
@@ -422,7 +383,11 @@ export const getAllOrders = async (
     const ordersResult = await request2.query(`
       SELECT o.*,
              (
-               SELECT oi.*, p.title, p.price as product_price
+               SELECT oi.*, 
+                      p.name_ar, 
+                      p.name_en, 
+                      p.name_ar as title, 
+                      p.price as product_price
                FROM order_items oi
                INNER JOIN products p ON oi.product_id = p.id
                WHERE oi.order_id = o.id

@@ -1,9 +1,13 @@
-import { Response, NextFunction } from 'express';
-import { v4 as uuidv4 } from 'uuid';
-import { getPool, sql } from '../config/database';
-import { AuthRequest, Order, OrderItem } from '../types';
-import { ApiError } from '../middleware/errorHandler';
-import { parseJSON, getPaginationOffset, getTotalPages } from '../utils/helpers';
+import { Response, NextFunction } from "express";
+import { v4 as uuidv4 } from "uuid";
+import { getPool, sql } from "../config/database";
+import { AuthRequest, Order, OrderItem } from "../types";
+import { ApiError } from "../middleware/errorHandler";
+import {
+  parseJSON,
+  getPaginationOffset,
+  getTotalPages,
+} from "../utils/helpers";
 
 /**
  * Create a new order
@@ -41,19 +45,18 @@ export const createOrder = async (
       // Insert order
       await transaction
         .request()
-        .input('id', sql.UniqueIdentifier, orderId)
-        .input('user_id', sql.UniqueIdentifier, user_id || null)
-        .input('total_price', sql.Decimal(10, 2), total_price)
-        .input('customer_first_name', sql.NVarChar, customer_first_name)
-        .input('customer_last_name', sql.NVarChar, customer_last_name)
-        .input('customer_phone', sql.NVarChar, customer_phone)
-        .input('customer_email', sql.NVarChar, customer_email || null)
-        .input('customer_street_address', sql.NVarChar, customer_street_address)
-        .input('customer_city', sql.NVarChar, customer_city)
-        .input('customer_state', sql.NVarChar, customer_state || null)
-        .input('customer_postcode', sql.NVarChar, customer_postcode || null)
-        .input('order_notes', sql.NVarChar(sql.MAX), notes || null)
-        .query(`
+        .input("id", sql.UniqueIdentifier, orderId)
+        .input("user_id", sql.UniqueIdentifier, user_id || null)
+        .input("total_price", sql.Decimal(10, 2), total_price)
+        .input("customer_first_name", sql.NVarChar, customer_first_name)
+        .input("customer_last_name", sql.NVarChar, customer_last_name)
+        .input("customer_phone", sql.NVarChar, customer_phone)
+        .input("customer_email", sql.NVarChar, customer_email || null)
+        .input("customer_street_address", sql.NVarChar, customer_street_address)
+        .input("customer_city", sql.NVarChar, customer_city)
+        .input("customer_state", sql.NVarChar, customer_state || null)
+        .input("customer_postcode", sql.NVarChar, customer_postcode || null)
+        .input("order_notes", sql.NVarChar(sql.MAX), notes || null).query(`
           INSERT INTO orders (
             id, user_id, total_price, status,
             customer_first_name, customer_last_name, customer_phone, customer_email,
@@ -73,31 +76,32 @@ export const createOrder = async (
         const itemId = uuidv4();
         await transaction
           .request()
-          .input('id', sql.UniqueIdentifier, itemId)
-          .input('order_id', sql.UniqueIdentifier, orderId)
-          .input('product_id', sql.UniqueIdentifier, item.product_id)
-          .input('quantity', sql.Int, item.quantity)
-          .input('price', sql.Decimal(10, 2), item.price)
-          .query(`
+          .input("id", sql.UniqueIdentifier, itemId)
+          .input("order_id", sql.UniqueIdentifier, orderId)
+          .input("product_id", sql.UniqueIdentifier, item.product_id)
+          .input("quantity", sql.Int, item.quantity)
+          .input("price", sql.Decimal(10, 2), item.price).query(`
             INSERT INTO order_items (id, order_id, product_id, quantity, price)
             VALUES (@id, @order_id, @product_id, @quantity, @price)
           `);
       }
 
-      // Insert payment record
-      const paymentId = uuidv4();
-      await transaction
-        .request()
-        .input('id', sql.UniqueIdentifier, paymentId)
-        .input('order_id', sql.UniqueIdentifier, orderId)
-        .input('payment_method', sql.NVarChar, payment_method)
-        .input('amount', sql.Decimal(10, 2), total_price)
-        .input('payment_status', sql.NVarChar, payment_method === 'cod' ? 'pending' : 'pending')
-        .input('customer_reference', sql.NVarChar, orderId) // Use orderId as reference
-        .query(`
-          INSERT INTO payments (id, order_id, payment_method, amount, payment_status, customer_reference)
-          VALUES (@id, @order_id, @payment_method, @amount, @payment_status, @customer_reference)
-        `);
+      // Insert payment record only for COD (Cash on Delivery)
+      // For EasyKash, payment record will be created by initiateEasykashPayment service
+      if (payment_method === "cod") {
+        const paymentId = uuidv4();
+        await transaction
+          .request()
+          .input("id", sql.UniqueIdentifier, paymentId)
+          .input("order_id", sql.UniqueIdentifier, orderId)
+          .input("payment_method", sql.NVarChar, payment_method)
+          .input("amount", sql.Decimal(10, 2), total_price)
+          .input("payment_status", sql.NVarChar, "pending")
+          .input("customer_reference", sql.NVarChar, orderId).query(`
+            INSERT INTO payments (id, order_id, payment_method, amount, payment_status, customer_reference)
+            VALUES (@id, @order_id, @payment_method, @amount, @payment_status, @customer_reference)
+          `);
+      }
 
       // Commit transaction
       await transaction.commit();
@@ -105,8 +109,7 @@ export const createOrder = async (
       // Get created order with items
       const orderResult = await pool
         .request()
-        .input('orderId', sql.UniqueIdentifier, orderId)
-        .query(`
+        .input("orderId", sql.UniqueIdentifier, orderId).query(`
           SELECT o.*,
                  (
                    SELECT oi.*, 
@@ -139,7 +142,7 @@ export const createOrder = async (
       res.status(201).json({
         success: true,
         data: order,
-        message: 'Order created successfully',
+        message: "Order created successfully",
       });
     } catch (error) {
       await transaction.rollback();
@@ -160,7 +163,7 @@ export const getUserOrders = async (
 ) => {
   try {
     if (!req.user) {
-      throw new ApiError(401, 'Authentication required');
+      throw new ApiError(401, "Authentication required");
     }
 
     const page = parseInt(req.query.page as string) || 1;
@@ -172,8 +175,7 @@ export const getUserOrders = async (
     // Get total count
     const countResult = await pool
       .request()
-      .input('user_id', sql.UniqueIdentifier, req.user.id)
-      .query(`
+      .input("user_id", sql.UniqueIdentifier, req.user.id).query(`
         SELECT COUNT(*) as total
         FROM orders
         WHERE user_id = @user_id
@@ -184,20 +186,28 @@ export const getUserOrders = async (
     // Get orders
     const ordersResult = await pool
       .request()
-      .input('user_id', sql.UniqueIdentifier, req.user.id)
-      .input('offset', sql.Int, offset)
-      .input('limit', sql.Int, limit)
-      .query(`
+      .input("user_id", sql.UniqueIdentifier, req.user.id)
+      .input("offset", sql.Int, offset)
+      .input("limit", sql.Int, limit).query(`
         SELECT o.*,
                (
-                 SELECT oi.*, 
-                        p.name_ar, 
-                        p.name_en, 
-                        p.name_ar as title,
-                        p.price as product_price, 
-                        p.images
+                 SELECT oi.id, 
+                        oi.order_id,
+                        oi.product_id, 
+                        oi.quantity, 
+                        oi.price,
+                        oi.created_at,
+                        (
+                          SELECT p.id,
+                                 p.name_ar as title,
+                                 p.name_en,
+                                 p.price,
+                                 p.images
+                          FROM products p
+                          WHERE p.id = oi.product_id
+                          FOR JSON PATH, WITHOUT_ARRAY_WRAPPER
+                        ) as product
                  FROM order_items oi
-                 INNER JOIN products p ON oi.product_id = p.id
                  WHERE oi.order_id = o.id
                  FOR JSON PATH
                ) as order_items,
@@ -214,9 +224,21 @@ export const getUserOrders = async (
         FETCH NEXT @limit ROWS ONLY
       `);
 
-    const orders = ordersResult.recordset.map(order => ({
+    const orders = ordersResult.recordset.map((order) => ({
       ...order,
-      order_items: parseJSON(order.order_items, []),
+      order_items: parseJSON(order.order_items, []).map((item: any) => {
+        const product =
+          typeof item.product === "string"
+            ? parseJSON(item.product, null)
+            : item.product;
+        if (product && typeof product.images === "string") {
+          product.images = parseJSON(product.images, []);
+        }
+        return {
+          ...item,
+          product,
+        };
+      }),
       payments: parseJSON(order.payments, []),
     }));
 
@@ -249,18 +271,26 @@ export const getOrderById = async (
 
     const orderResult = await pool
       .request()
-      .input('orderId', sql.UniqueIdentifier, id)
-      .query(`
+      .input("orderId", sql.UniqueIdentifier, id).query(`
         SELECT o.*,
                (
-                 SELECT oi.*, 
-                        p.name_ar, 
-                        p.name_en, 
-                        p.name_ar as title, 
-                        p.price as product_price, 
-                        p.images
+                 SELECT oi.id, 
+                        oi.order_id,
+                        oi.product_id, 
+                        oi.quantity, 
+                        oi.price,
+                        oi.created_at,
+                        (
+                          SELECT p.id,
+                                 p.name_ar as title,
+                                 p.name_en,
+                                 p.price,
+                                 p.images
+                          FROM products p
+                          WHERE p.id = oi.product_id
+                          FOR JSON PATH, WITHOUT_ARRAY_WRAPPER
+                        ) as product
                  FROM order_items oi
-                 INNER JOIN products p ON oi.product_id = p.id
                  WHERE oi.order_id = o.id
                  FOR JSON PATH
                ) as order_items,
@@ -275,19 +305,46 @@ export const getOrderById = async (
       `);
 
     if (orderResult.recordset.length === 0) {
-      throw new ApiError(404, 'Order not found');
+      throw new ApiError(404, "Order not found");
     }
 
     const order = {
       ...orderResult.recordset[0],
-      order_items: parseJSON(orderResult.recordset[0].order_items, []),
+      order_items: parseJSON(orderResult.recordset[0].order_items, []).map(
+        (item: any) => {
+          const product =
+            typeof item.product === "string"
+              ? parseJSON(item.product, null)
+              : item.product;
+          if (product && typeof product.images === "string") {
+            product.images = parseJSON(product.images, []);
+          }
+          // Rename 'product' to 'products' for consistency with getAllOrders
+          return {
+            ...item,
+            products: product
+              ? {
+                  id: product.id,
+                  name_ar: product.title || product.name_ar,
+                  name_en: product.name_en,
+                  price: product.price,
+                  image_url: product.images || [],
+                }
+              : null,
+          };
+        }
+      ),
       payments: parseJSON(orderResult.recordset[0].payments, []),
     };
 
     // Check authorization (user can only see their own orders, admin can see all)
     if (req.user) {
-      if (order.user_id && order.user_id !== req.user.id && req.user.role !== 'admin') {
-        throw new ApiError(403, 'Access denied');
+      if (
+        order.user_id &&
+        order.user_id !== req.user.id &&
+        req.user.role !== "admin"
+      ) {
+        throw new ApiError(403, "Access denied");
       }
     }
 
@@ -312,18 +369,24 @@ export const updateOrderStatus = async (
     const { id } = req.params;
     const { status } = req.body;
 
-    const validStatuses = ['pending', 'paid', 'shipped', 'delivered', 'cancelled'];
+    const validStatuses = [
+      "pending",
+      "paid",
+      "confirmed",
+      "shipped",
+      "delivered",
+      "cancelled",
+    ];
     if (!validStatuses.includes(status)) {
-      throw new ApiError(400, 'Invalid status');
+      throw new ApiError(400, "Invalid status");
     }
 
     const pool = getPool();
 
     const result = await pool
       .request()
-      .input('id', sql.UniqueIdentifier, id)
-      .input('status', sql.NVarChar, status)
-      .query(`
+      .input("id", sql.UniqueIdentifier, id)
+      .input("status", sql.NVarChar, status).query(`
         UPDATE orders
         SET status = @status, updated_at = GETDATE()
         OUTPUT INSERTED.*
@@ -331,13 +394,13 @@ export const updateOrderStatus = async (
       `);
 
     if (result.recordset.length === 0) {
-      throw new ApiError(404, 'Order not found');
+      throw new ApiError(404, "Order not found");
     }
 
     res.json({
       success: true,
       data: result.recordset[0],
-      message: 'Order status updated successfully',
+      message: "Order status updated successfully",
     });
   } catch (error) {
     next(error);
@@ -360,36 +423,56 @@ export const getAllOrders = async (
 
     const pool = getPool();
 
-    // Build where clause
-    let whereClause = '';
-    const request = pool.request();
+    // Build where clause - exclude pending orders by default
+    let whereClause = "";
+    let countQuery = "";
 
     if (status) {
-      whereClause = 'WHERE o.status = @status';
-      request.input('status', sql.NVarChar, status);
+      // If a specific status is selected, show only that status
+      whereClause = "WHERE o.status = @status";
+      countQuery = `SELECT COUNT(*) as total FROM orders o WHERE o.status = @status`;
+    } else {
+      // Otherwise, show all orders EXCEPT pending
+      whereClause = "WHERE o.status != 'pending'";
+      countQuery = `SELECT COUNT(*) as total FROM orders o WHERE o.status != 'pending'`;
     }
 
     // Get total count
-    const countQuery = `SELECT COUNT(*) as total FROM orders o ${whereClause}`;
+    const request = pool.request();
+    if (status) {
+      request.input("status", sql.NVarChar, status);
+    }
     const countResult = await request.query(countQuery);
     const total = countResult.recordset[0].total;
 
-    // Get orders
+    // Get orders - apply same where clause
     const request2 = pool.request();
-    if (status) request2.input('status', sql.NVarChar, status);
-    request2.input('offset', sql.Int, offset);
-    request2.input('limit', sql.Int, limit);
+    if (status) {
+      request2.input("status", sql.NVarChar, status);
+    }
+    request2.input("offset", sql.Int, offset);
+    request2.input("limit", sql.Int, limit);
 
     const ordersResult = await request2.query(`
       SELECT o.*,
              (
-               SELECT oi.*, 
-                      p.name_ar, 
-                      p.name_en, 
-                      p.name_ar as title, 
-                      p.price as product_price
+               SELECT oi.id, 
+                      oi.order_id,
+                      oi.product_id, 
+                      oi.quantity, 
+                      oi.price,
+                      oi.created_at,
+                      (
+                        SELECT p.id,
+                               p.name_ar as title,
+                               p.name_en,
+                               p.price,
+                               p.images
+                        FROM products p
+                        WHERE p.id = oi.product_id
+                        FOR JSON PATH, WITHOUT_ARRAY_WRAPPER
+                      ) as product
                FROM order_items oi
-               INNER JOIN products p ON oi.product_id = p.id
                WHERE oi.order_id = o.id
                FOR JSON PATH
              ) as order_items,
@@ -406,9 +489,21 @@ export const getAllOrders = async (
       FETCH NEXT @limit ROWS ONLY
     `);
 
-    const orders = ordersResult.recordset.map(order => ({
+    const orders = ordersResult.recordset.map((order) => ({
       ...order,
-      order_items: parseJSON(order.order_items, []),
+      order_items: parseJSON(order.order_items, []).map((item: any) => {
+        const product =
+          typeof item.product === "string"
+            ? parseJSON(item.product, null)
+            : item.product;
+        if (product && typeof product.images === "string") {
+          product.images = parseJSON(product.images, []);
+        }
+        return {
+          ...item,
+          product,
+        };
+      }),
       payments: parseJSON(order.payments, []),
     }));
 
@@ -426,5 +521,3 @@ export const getAllOrders = async (
     next(error);
   }
 };
-
-

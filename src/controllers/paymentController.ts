@@ -1,249 +1,178 @@
-import { Response, NextFunction } from 'express';
-import axios from 'axios';
-import { v4 as uuidv4 } from 'uuid';
-import { getPool, sql } from '../config/database';
-import { AuthRequest, EasykashCallback } from '../types';
-import { ApiError } from '../middleware/errorHandler';
-import { verifyEasykashSignature } from '../utils/helpers';
-
-const EASYKASH_API_URL = process.env.EASYKASH_API_URL || '';
-const EASYKASH_SECRET_KEY = process.env.EASYKASH_SECRET_KEY || '';
-const EASYKASH_REDIRECT_URL = process.env.EASYKASH_REDIRECT_URL || '';
+import { Response, NextFunction } from "express";
+import { AuthRequest } from "../types";
+import {
+  PaymentService,
+  InitiatePaymentData,
+} from "../services/payment.service";
+import { ApiError } from "../middleware/errorHandler";
+import { asyncHandler } from "../middleware/errorHandler";
 
 /**
- * Initiate payment with Easykash
+ * Initiate payment with EasyKash
  */
-export const initiatePayment = async (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction
-) => {
-  try {
-    const {
-      order_id,
-      amount,
-      name,
-      email,
-      mobile,
-      paymentOptions, // Array of payment option IDs
-    } = req.body;
+export const initiatePayment = asyncHandler(
+  async (req: AuthRequest, res: Response, next: NextFunction) => {
+    const { order_id, amount, name, email, mobile, currency } = req.body;
 
     if (!order_id || !amount || !name || !mobile) {
-      throw new ApiError(400, 'Missing required payment fields');
+      throw new ApiError(400, "Missing required payment fields");
     }
 
-    const pool = getPool();
+    // Get user ID if authenticated (optional for guest checkout)
+    const userId = req.user?.id;
 
-    // Check if order exists
-    const orderResult = await pool
-      .request()
-      .input('order_id', sql.UniqueIdentifier, order_id)
-      .query(`
-        SELECT id, total_price, status
-        FROM orders
-        WHERE id = @order_id
-      `);
-
-    if (orderResult.recordset.length === 0) {
-      throw new ApiError(404, 'Order not found');
-    }
-
-    const order = orderResult.recordset[0];
-
-    if (order.status !== 'pending') {
-      throw new ApiError(400, 'Order is not in pending status');
-    }
-
-    // Prepare Easykash payment request
-    const paymentRequest = {
+    const paymentData: InitiatePaymentData = {
+      order_id,
       amount: parseFloat(amount.toString()),
-      currency: 'EGP',
-      paymentOptions: paymentOptions || [2, 3, 4, 5, 6], // Default: all options
-      cashExpiry: 3, // 3 days
-      name,
-      email: email || '',
-      mobile,
-      redirectUrl: EASYKASH_REDIRECT_URL,
-      customerReference: order_id,
+      currency: currency,
+      customer_name: name,
+      customer_email: email,
+      customer_phone: mobile,
     };
 
-    try {
-      // Call Easykash API
-      const easykashResponse = await axios.post(
-        EASYKASH_API_URL,
-        paymentRequest,
-        {
-          headers: {
-            'Content-Type': 'application/json',
-          },
-        }
-      );
-
-      // Update payment record with Easykash details
-      await pool
-        .request()
-        .input('order_id', sql.UniqueIdentifier, order_id)
-        .input('payment_status', sql.NVarChar, 'pending')
-        .query(`
-          UPDATE payments
-          SET payment_status = @payment_status,
-              updated_at = GETDATE()
-          WHERE order_id = @order_id
-        `);
-
-      // Return redirect URL
-      res.json({
-        success: true,
-        data: {
-          redirectUrl: easykashResponse.data.redirectUrl,
-          order_id,
-        },
-        message: 'Payment initiated successfully',
-      });
-    } catch (easykashError: any) {
-      console.error('Easykash API Error:', easykashError.response?.data || easykashError.message);
-      throw new ApiError(500, 'Failed to initiate payment with Easykash');
-    }
-  } catch (error) {
-    next(error);
-  }
-};
-
-/**
- * Handle Easykash payment callback
- */
-export const handlePaymentCallback = async (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction
-) => {
-  try {
-    const callbackData: EasykashCallback = req.body;
-
-    console.log('Easykash Callback Received:', callbackData);
-
-    // Verify signature
-    const isValid = verifyEasykashSignature(callbackData, EASYKASH_SECRET_KEY);
-
-    if (!isValid) {
-      console.error('Invalid Easykash signature');
-      throw new ApiError(400, 'Invalid payment signature');
-    }
-
-    const {
-      ProductCode,
-      PaymentMethod,
-      Amount,
-      status,
-      easykashRef,
-      voucher,
-      customerReference,
-    } = callbackData;
-
-    const pool = getPool();
-
-    // Get order
-    const orderResult = await pool
-      .request()
-      .input('order_id', sql.UniqueIdentifier, customerReference)
-      .query(`
-        SELECT id, status, total_price
-        FROM orders
-        WHERE id = @order_id
-      `);
-
-    if (orderResult.recordset.length === 0) {
-      throw new ApiError(404, 'Order not found');
-    }
-
-    const order = orderResult.recordset[0];
-
-    // Update payment record
-    const paymentStatus = status === 'PAID' ? 'completed' : status === 'FAILED' ? 'failed' : 'pending';
-
-    await pool
-      .request()
-      .input('order_id', sql.UniqueIdentifier, customerReference)
-      .input('payment_status', sql.NVarChar, paymentStatus)
-      .input('payment_provider', sql.NVarChar, PaymentMethod)
-      .input('easykash_ref', sql.NVarChar, easykashRef)
-      .input('easykash_product_code', sql.NVarChar, ProductCode)
-      .input('voucher', sql.NVarChar, voucher || null)
-      .query(`
-        UPDATE payments
-        SET payment_status = @payment_status,
-            payment_provider = @payment_provider,
-            easykash_ref = @easykash_ref,
-            easykash_product_code = @easykash_product_code,
-            voucher = @voucher,
-            updated_at = GETDATE()
-        WHERE order_id = @order_id
-      `);
-
-    // Update order status
-    if (status === 'PAID') {
-      await pool
-        .request()
-        .input('order_id', sql.UniqueIdentifier, customerReference)
-        .input('status', sql.NVarChar, 'paid')
-        .query(`
-          UPDATE orders
-          SET status = @status, updated_at = GETDATE()
-          WHERE id = @order_id
-        `);
-    } else if (status === 'FAILED') {
-      await pool
-        .request()
-        .input('order_id', sql.UniqueIdentifier, customerReference)
-        .input('status', sql.NVarChar, 'cancelled')
-        .query(`
-          UPDATE orders
-          SET status = @status, updated_at = GETDATE()
-          WHERE id = @order_id
-        `);
-    }
+    const result = await PaymentService.initiatePayment(
+      userId || "",
+      paymentData
+    );
 
     res.json({
       success: true,
-      message: 'Payment callback processed successfully',
+      data: {
+        redirectUrl: result.paymentUrl,
+        order_id,
+        paymentId: result.paymentId,
+      },
+      message: "Payment initiated successfully",
     });
-  } catch (error) {
-    next(error);
   }
-};
+);
+
+/**
+ * Handle EasyKash payment callback
+ */
+export const handlePaymentCallback = asyncHandler(
+  async (req: AuthRequest, res: Response, next: NextFunction) => {
+    const callbackData = req.body;
+
+    console.log("═══════════════════════════════════════");
+    console.log("📞 EasyKash Callback Received");
+    console.log("═══════════════════════════════════════");
+    console.log("Headers:", JSON.stringify(req.headers, null, 2));
+    console.log("Body:", JSON.stringify(callbackData, null, 2));
+    console.log("═══════════════════════════════════════");
+
+    try {
+      const result = await PaymentService.handleCallback(callbackData);
+
+      console.log("✅ Callback processed successfully:", result);
+
+      res.json({
+        success: true,
+        message: "Payment callback processed successfully",
+        data: result,
+      });
+    } catch (error: any) {
+      console.error("❌ Callback processing failed:", error);
+      console.error("Error details:", {
+        message: error.message,
+        stack: error.stack,
+      });
+
+      // Still return 200 to Easykash to prevent retries
+      // Log the error for investigation
+      res.status(200).json({
+        success: false,
+        message: error.message || "Failed to process callback",
+        error: error.message,
+      });
+    }
+  }
+);
+
+/**
+ * Handle EasyKash redirect callback (when user returns from payment page)
+ * This handles the redirect URL parameters: status, providerRefNum, customerReference, voucher
+ * NOTE: This is just the redirect - the actual payment status comes from the webhook/callback
+ */
+export const handlePaymentRedirect = asyncHandler(
+  async (req: AuthRequest, res: Response, next: NextFunction) => {
+    const { status, providerRefNum, customerReference, voucher } = req.query;
+
+    console.log("═══════════════════════════════════════");
+    console.log("🔄 EasyKash Redirect Received");
+    console.log("═══════════════════════════════════════");
+    console.log("Status from redirect:", status);
+    console.log("ProviderRefNum:", providerRefNum);
+    console.log("CustomerReference:", customerReference);
+    console.log("Voucher:", voucher);
+    console.log("═══════════════════════════════════════");
+
+    if (!customerReference) {
+      throw new ApiError(400, "Missing customerReference in redirect");
+    }
+
+    // Parse customerReference to get order and payment info
+    let customData: any = {};
+    try {
+      customData = JSON.parse(customerReference as string);
+      console.log("✅ Parsed customerReference:", customData);
+    } catch (e) {
+      console.log("⚠️ customerReference is not JSON, using as orderId");
+      customData = { orderId: customerReference };
+    }
+
+    // Get payment by order ID to find payment record
+    const payment = await PaymentService.getPaymentByOrderId(
+      customData.orderId || customerReference
+    );
+
+    if (!payment) {
+      console.error(
+        "❌ Payment not found for orderId:",
+        customData.orderId || customerReference
+      );
+      throw new ApiError(404, "Payment not found");
+    }
+
+    console.log("📊 Current payment status in DB:", payment.payment_status);
+    console.log("📊 Redirect status:", status);
+
+    // IMPORTANT: The redirect status is NOT the final payment status
+    // The real status comes from the webhook/callback
+    // But we can return the current DB status for the frontend to poll
+
+    res.json({
+      success: true,
+      data: {
+        order_id: payment.order_id,
+        payment_status: payment.payment_status, // Return current DB status
+        redirect_status: status, // The status from redirect (may not be accurate)
+        providerRefNum: providerRefNum || null,
+        voucher: voucher || null,
+      },
+      message:
+        "Payment redirect received. Please wait for final confirmation from payment gateway.",
+    });
+  }
+);
 
 /**
  * Get payment status for an order
  */
-export const getPaymentStatus = async (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction
-) => {
-  try {
+export const getPaymentStatus = asyncHandler(
+  async (req: AuthRequest, res: Response, next: NextFunction) => {
     const { order_id } = req.params;
-    const pool = getPool();
+    const userId = req.user?.id;
 
-    const paymentResult = await pool
-      .request()
-      .input('order_id', sql.UniqueIdentifier, order_id)
-      .query(`
-        SELECT *
-        FROM payments
-        WHERE order_id = @order_id
-      `);
+    const payment = await PaymentService.getPaymentByOrderId(order_id, userId);
 
-    if (paymentResult.recordset.length === 0) {
-      throw new ApiError(404, 'Payment not found');
+    if (!payment) {
+      throw new ApiError(404, "Payment not found");
     }
 
     res.json({
       success: true,
-      data: paymentResult.recordset[0],
+      data: payment,
     });
-  } catch (error) {
-    next(error);
   }
-};
-
-
+);

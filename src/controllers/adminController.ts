@@ -1,6 +1,7 @@
 import { Response, NextFunction } from 'express';
 import bcrypt from 'bcryptjs';
 import { v4 as uuidv4 } from 'uuid';
+import sql from 'mssql';
 import { getPool } from '../config/database';
 import { AuthRequest } from '../types';
 import { ApiError } from '../middleware/errorHandler';
@@ -43,11 +44,14 @@ export const getAllOrders = async (
     const params: any[] = [];
     let paramIndex = 1;
 
-    // Filter by status
+    // Filter by status - if no status selected, exclude pending orders
     if (status) {
       query += ` AND o.status = @param${paramIndex}`;
       params.push({ name: `param${paramIndex}`, type: 'NVarChar', value: status });
       paramIndex++;
+    } else {
+      // Exclude pending orders when no specific status is selected
+      query += ` AND o.status != 'pending'`;
     }
 
     // Filter by date
@@ -116,19 +120,35 @@ export const getAllOrders = async (
       // Get order items
       const itemsResult = await pool
         .request()
-        .input('order_id', order.id)
+        .input('order_id', sql.UniqueIdentifier, order.id)
         .query(`
-          SELECT oi.*, p.title, p.name_ar, p.name_en, p.price, p.images
+          SELECT oi.*, 
+                 p.name_ar, 
+                 p.name_en, 
+                 p.price, 
+                 p.images as image_url,
+                 p.offer_price
           FROM order_items oi
           LEFT JOIN products p ON oi.product_id = p.id
           WHERE oi.order_id = @order_id
         `);
-      order.order_items = itemsResult.recordset;
+      
+      // Transform order items to match expected format
+      order.order_items = itemsResult.recordset.map((item: any) => ({
+        ...item,
+        products: item.name_ar || item.name_en ? {
+          name_ar: item.name_ar,
+          name_en: item.name_en,
+          price: item.price,
+          offer_price: item.offer_price,
+          image_url: item.image_url ? (typeof item.image_url === 'string' ? JSON.parse(item.image_url) : item.image_url) : [],
+        } : null,
+      }));
 
       // Get payments
       const paymentsResult = await pool
         .request()
-        .input('order_id', order.id)
+        .input('order_id', sql.UniqueIdentifier, order.id)
         .query(`
           SELECT * FROM payments WHERE order_id = @order_id
         `);
@@ -163,9 +183,10 @@ export const getOrderStats = async (
 
     const result = await pool.request().query(`
       SELECT 
-        COUNT(*) as total,
+        COUNT(CASE WHEN status != 'pending' THEN 1 END) as total,
         SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
         SUM(CASE WHEN status = 'paid' THEN 1 ELSE 0 END) as paid,
+        SUM(CASE WHEN status = 'confirmed' THEN 1 ELSE 0 END) as confirmed,
         SUM(CASE WHEN status = 'shipped' THEN 1 ELSE 0 END) as shipped,
         SUM(CASE WHEN status = 'delivered' THEN 1 ELSE 0 END) as delivered,
         SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) as cancelled
@@ -184,6 +205,305 @@ export const getOrderStats = async (
 /**
  * Create new admin user (Admin only)
  */
+/**
+ * Get all users (Admin only)
+ */
+export const getAllUsers = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const {
+      page = '1',
+      limit = '10',
+      role,
+      search,
+      date,
+    } = req.query;
+
+    const pool = getPool();
+    const pageNum = parseInt(page as string);
+    const limitNum = parseInt(limit as string);
+    const offset = (pageNum - 1) * limitNum;
+
+    // Build query based on role (admin uses admin_profiles, user uses profiles)
+    let query = `
+      SELECT 
+        u.id,
+        u.email,
+        u.name,
+        u.role,
+        u.email_verified,
+        u.created_at,
+        u.updated_at
+    `;
+
+    // If filtering by admin, join with admin_profiles
+    // If filtering by user, join with profiles
+    // If no filter, get both with UNION
+    let fromClause = '';
+    let whereClause = 'WHERE 1=1';
+    const params: any[] = [];
+    let paramIndex = 1;
+
+    if (role === 'admin') {
+      query += `,
+        ap.full_name,
+        ap.phone,
+        ap.avatar_url`;
+      fromClause = `
+        FROM users u
+        LEFT JOIN admin_profiles ap ON u.id = ap.user_id
+      `;
+      whereClause += ` AND u.role = 'admin'`;
+    } else if (role === 'user') {
+      query += `,
+        p.full_name,
+        p.phone,
+        p.avatar_url`;
+      fromClause = `
+        FROM users u
+        LEFT JOIN profiles p ON u.id = p.user_id
+      `;
+      whereClause += ` AND u.role = 'user'`;
+    } else {
+      // Get all users - use COALESCE to get profile data from either table
+      query += `,
+        COALESCE(ap.full_name, p.full_name) as full_name,
+        COALESCE(ap.phone, p.phone) as phone,
+        COALESCE(ap.avatar_url, p.avatar_url) as avatar_url`;
+      fromClause = `
+        FROM users u
+        LEFT JOIN admin_profiles ap ON u.id = ap.user_id AND u.role = 'admin'
+        LEFT JOIN profiles p ON u.id = p.user_id AND u.role = 'user'
+      `;
+    }
+
+    // Filter by search
+    if (search) {
+      const searchValue = `%${search}%`;
+      whereClause += ` AND (
+        u.email LIKE @param${paramIndex} 
+        OR u.name LIKE @param${paramIndex}
+        OR COALESCE(ap.full_name, p.full_name, '') LIKE @param${paramIndex}
+        OR COALESCE(ap.phone, p.phone, '') LIKE @param${paramIndex}
+      )`;
+      params.push({ name: `param${paramIndex}`, type: 'NVarChar', value: searchValue });
+      paramIndex++;
+    }
+
+    // Filter by date
+    if (date) {
+      const now = new Date();
+      let startDate = new Date();
+
+      switch (date) {
+        case 'today':
+          startDate.setHours(0, 0, 0, 0);
+          break;
+        case 'week':
+          startDate.setDate(now.getDate() - 7);
+          break;
+        case 'month':
+          startDate.setMonth(now.getMonth() - 1);
+          break;
+        case 'year':
+          startDate.setFullYear(now.getFullYear() - 1);
+          break;
+      }
+
+      whereClause += ` AND u.created_at >= @param${paramIndex}`;
+      params.push({ name: `param${paramIndex}`, type: 'DateTime2', value: startDate });
+      paramIndex++;
+    }
+
+    // Build complete query
+    const fullQuery = `
+      ${query}
+      ${fromClause}
+      ${whereClause}
+      ORDER BY u.created_at DESC
+      OFFSET @offset ROWS
+      FETCH NEXT @limit ROWS ONLY
+    `;
+
+    // Get total count
+    const countQuery = `
+      SELECT COUNT(*) as total
+      ${fromClause}
+      ${whereClause}
+    `;
+
+    // Execute queries
+    const request = pool.request();
+    params.forEach((param) => {
+      request.input(param.name, sql[param.type as keyof typeof sql], param.value);
+    });
+    request.input('offset', sql.Int, offset);
+    request.input('limit', sql.Int, limitNum);
+
+    const countRequest = pool.request();
+    params.forEach((param) => {
+      countRequest.input(param.name, sql[param.type as keyof typeof sql], param.value);
+    });
+
+    const [usersResult, countResult] = await Promise.all([
+      request.query(fullQuery),
+      countRequest.query(countQuery),
+    ]);
+
+    const users = usersResult.recordset;
+    const total = countResult.recordset[0].total;
+
+    res.json({
+      success: true,
+      data: {
+        users,
+        total,
+        page: pageNum,
+        limit: limitNum,
+        totalPages: Math.ceil(total / limitNum),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Get user stats (Admin only)
+ */
+export const getUserStats = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const pool = getPool();
+
+    const result = await pool.query(`
+      SELECT
+        COUNT(*) as total,
+        SUM(CASE WHEN role = 'admin' THEN 1 ELSE 0 END) as admins,
+        SUM(CASE WHEN role = 'user' THEN 1 ELSE 0 END) as users
+      FROM users
+    `);
+
+    const stats = result.recordset[0];
+
+    res.json({
+      success: true,
+      data: {
+        total: stats.total || 0,
+        admins: stats.admins || 0,
+        users: stats.users || 0,
+        active: 0, // TODO: Implement active user tracking
+        inactive: 0,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Get user by ID (Admin only)
+ */
+export const getUserById = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const { id } = req.params;
+    const pool = getPool();
+
+    // First, get user role to determine which profile table to use
+    const userResult = await pool
+      .request()
+      .input('userId', sql.UniqueIdentifier, id)
+      .query('SELECT role FROM users WHERE id = @userId');
+
+    if (userResult.recordset.length === 0) {
+      throw new ApiError(404, 'User not found');
+    }
+
+    const userRole = userResult.recordset[0].role;
+    const profileTable = userRole === 'admin' ? 'admin_profiles' : 'profiles';
+    const profileColumns =
+      userRole === 'admin'
+        ? 'p.full_name, p.phone, p.avatar_url, p.job_title, p.address, p.about'
+        : 'p.full_name, p.phone, p.avatar_url';
+
+    const result = await pool
+      .request()
+      .input('userId', sql.UniqueIdentifier, id)
+      .query(`
+        SELECT 
+          u.id,
+          u.email,
+          u.name,
+          u.role,
+          u.email_verified,
+          u.created_at,
+          u.updated_at,
+          ${profileColumns}
+        FROM users u
+        LEFT JOIN ${profileTable} p ON u.id = p.user_id
+        WHERE u.id = @userId
+      `);
+
+    if (result.recordset.length === 0) {
+      throw new ApiError(404, 'User not found');
+    }
+
+    res.json({
+      success: true,
+      data: result.recordset[0],
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Delete user (Admin only)
+ */
+export const deleteUser = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const { id } = req.params;
+    const pool = getPool();
+
+    // Check if user exists
+    const userResult = await pool
+      .request()
+      .input('userId', sql.UniqueIdentifier, id)
+      .query('SELECT id FROM users WHERE id = @userId');
+
+    if (userResult.recordset.length === 0) {
+      throw new ApiError(404, 'User not found');
+    }
+
+    // Delete user (cascade will delete related records)
+    await pool
+      .request()
+      .input('userId', sql.UniqueIdentifier, id)
+      .query('DELETE FROM users WHERE id = @userId');
+
+    res.json({
+      success: true,
+      message: 'User deleted successfully',
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const createAdminUser = async (
   req: AuthRequest,
   res: Response,

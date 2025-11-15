@@ -4,6 +4,10 @@ import {
   getAllOrders,
   getOrderStats,
   createAdminUser,
+  getAllUsers,
+  getUserStats,
+  getUserById,
+  deleteUser,
 } from '../controllers/adminController';
 
 const router = Router();
@@ -16,13 +20,11 @@ router.get('/orders', getAllOrders);
 router.get('/orders/stats', getOrderStats);
 
 // Users management
+router.get('/users', getAllUsers);
+router.get('/users/stats', getUserStats);
+router.get('/users/:id', getUserById);
 router.post('/users/create-admin', createAdminUser);
-
-// TODO: Add more admin endpoints
-// router.get('/users', getAllUsers);
-// router.get('/users/stats', getUserStats);
-// router.put('/users/:id', updateUser);
-// router.delete('/users/:id', deleteUser);
+router.delete('/users/:id', deleteUser);
 
 export default router;
 

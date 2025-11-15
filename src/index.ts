@@ -17,6 +17,7 @@ import contentRoutes from "./routes/contentRoutes";
 import uploadRoutes from "./routes/uploadRoutes";
 import addressesRoutes from "./routes/addressesRoutes";
 import adminRoutes from "./routes/adminRoutes";
+import shippingRoutes from "./routes/shipping.routes";
 
 // Load environment variables
 dotenv.config();
@@ -85,14 +86,42 @@ app.use("/api/content", contentRoutes);
 app.use("/api/upload", uploadRoutes);
 app.use("/api/addresses", addressesRoutes);
 app.use("/api/admin", adminRoutes);
+app.use("/api/shipping", shippingRoutes);
 
-// Root route
+// Root route - Also handle EasyKash callbacks that go to root
 app.get("/", (req: Request, res: Response) => {
   res.json({
     success: true,
     message: "Lapip Store API v1.0",
     documentation: "/api/docs",
   });
+});
+
+// EasyKash sometimes sends POST callbacks to root URL instead of callback URL
+// This is a workaround to handle those callbacks
+app.post("/", async (req: Request, res: Response) => {
+  console.log("═══════════════════════════════════════");
+  console.log("⚠️  Callback received at ROOT URL (/)");
+  console.log("═══════════════════════════════════════");
+  console.log("This should be going to /api/payment/easykash/callback");
+  console.log("Body:", JSON.stringify(req.body, null, 2));
+  console.log("═══════════════════════════════════════");
+
+  // Forward to the correct payment controller
+  try {
+    const {
+      handlePaymentCallback,
+    } = require("./controllers/paymentController");
+    // Call the payment callback handler
+    await handlePaymentCallback(req as any, res, () => {});
+  } catch (error: any) {
+    console.error("Error handling root callback:", error);
+    // Still return 200 to prevent EasyKash from retrying
+    res.status(200).json({
+      success: false,
+      message: error.message || "Failed to process callback at root",
+    });
+  }
 });
 
 // Error handling

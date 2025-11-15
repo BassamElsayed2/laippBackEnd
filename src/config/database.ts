@@ -21,17 +21,17 @@ const config: sql.config = {
   },
 };
 
-let pool: sql.ConnectionPool | null = null;
+let _pool: sql.ConnectionPool | null = null;
 
 export const connectDB = async (): Promise<sql.ConnectionPool> => {
   try {
-    if (pool && pool.connected) {
-      return pool;
+    if (_pool && _pool.connected) {
+      return _pool;
     }
 
-    pool = await new sql.ConnectionPool(config).connect();
+    _pool = await new sql.ConnectionPool(config).connect();
     console.log("✅ Connected to SQL Server database successfully");
-    return pool;
+    return _pool;
   } catch (error) {
     console.error("❌ Error connecting to SQL Server:", error);
     throw error;
@@ -39,17 +39,17 @@ export const connectDB = async (): Promise<sql.ConnectionPool> => {
 };
 
 export const getPool = (): sql.ConnectionPool => {
-  if (!pool || !pool.connected) {
+  if (!_pool || !_pool.connected) {
     throw new Error("Database pool is not initialized. Call connectDB first.");
   }
-  return pool;
+  return _pool;
 };
 
 export const closeDB = async (): Promise<void> => {
   try {
-    if (pool) {
-      await pool.close();
-      pool = null;
+    if (_pool) {
+      await _pool.close();
+      _pool = null;
       console.log("Database connection closed");
     }
   } catch (error) {
@@ -58,4 +58,13 @@ export const closeDB = async (): Promise<void> => {
   }
 };
 
+// Export a Proxy that calls getPool() on each access to avoid null checks
 export { sql };
+export const pool = new Proxy({} as sql.ConnectionPool, {
+  get: (_, prop) => {
+    const p = getPool();
+    return typeof p[prop as keyof typeof p] === "function"
+      ? (p[prop as keyof typeof p] as Function).bind(p)
+      : p[prop as keyof typeof p];
+  },
+});

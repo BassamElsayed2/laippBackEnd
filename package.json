@@ -13,7 +13,8 @@
     "create-admin-simple": "node create-admin-simple.js",
     "fix-profiles": "ts-node src/scripts/create-missing-profiles.ts",
     "fix-admin-profile": "ts-node src/scripts/fix-admin-profile.ts",
-    "update-products-table": "sqlcmd -S localhost -d lapipDb -E -i src/scripts/update-products-table.sql"
+    "update-products-table": "sqlcmd -S localhost -d lapipDb -E -i src/scripts/update-products-table.sql",
+    "create-shipping-fees-table": "ts-node src/scripts/run-sql-file.ts src/scripts/create-shipping-fees-table.sql"
   },
   "keywords": [
     "express",
@@ -54,4 +55,3 @@
     "typescript": "^5.3.3"
   }
 }
-

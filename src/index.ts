@@ -3,7 +3,6 @@ import cors from "cors";
 import helmet from "helmet";
 import cookieParser from "cookie-parser";
 import dotenv from "dotenv";
-import rateLimit from "express-rate-limit";
 import { connectDB } from "./config/database";
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler";
 
@@ -25,8 +24,26 @@ dotenv.config();
 const app: Application = express();
 const PORT = process.env.PORT || 5000;
 
-// Security middleware
-app.use(helmet());
+// Security middleware - Enhanced Helmet configuration
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'", "'unsafe-inline'"], // For inline scripts if needed
+        styleSrc: ["'self'", "'unsafe-inline'"], // For inline styles
+        imgSrc: ["'self'", "data:", "https:", "http:"], // Allow images from HTTPS/HTTP
+        connectSrc: ["'self'"], // Allow connections to same origin
+        fontSrc: ["'self'", "data:"], // Allow fonts
+        objectSrc: ["'none'"], // Disallow plugins
+        mediaSrc: ["'self'"], // Allow media from same origin
+        frameSrc: ["'none'"], // Disallow frames
+      },
+    },
+    crossOriginEmbedderPolicy: false, // Allow external resources
+    crossOriginResourcePolicy: { policy: "cross-origin" }, // Allow CORS
+  })
+);
 
 // CORS configuration
 const allowedOrigins = [
@@ -39,14 +56,17 @@ const allowedOrigins = [
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow requests with no origin (like mobile apps or curl requests)
-      if (!origin) return callback(null, true);
+      // Allow requests with no origin only in development (like mobile apps or curl requests)
+      if (!origin && process.env.NODE_ENV === "development") {
+        return callback(null, true);
+      }
 
-      if (allowedOrigins.indexOf(origin) !== -1) {
+      if (allowedOrigins.indexOf(origin!) !== -1) {
         callback(null, true);
       } else {
         console.warn(`CORS blocked origin: ${origin}`);
-        callback(null, true); // Allow all origins in development
+        // Reject unauthorized origins
+        callback(new Error("Not allowed by CORS"));
       }
     },
     credentials: true,
@@ -54,13 +74,9 @@ app.use(
   })
 );
 
-// Rate limiting
-const limiter = rateLimit({
-  windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || "900000"), // 15 minutes
-  max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || "100"), // limit each IP to 100 requests per windowMs
-  message: "Too many requests from this IP, please try again later.",
-});
-app.use("/api/", limiter);
+// Rate limiting - Import from middleware
+import { apiLimiter } from "./middleware/rateLimiter";
+app.use("/api/", apiLimiter);
 
 // Body parser middleware
 app.use(express.json({ limit: "10mb" }));

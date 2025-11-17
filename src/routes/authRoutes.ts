@@ -17,19 +17,20 @@ import {
   updateProfileSchema,
   changePasswordSchema,
 } from '../middleware/validation';
+import { authLimiter, passwordLimiter } from '../middleware/rateLimiter';
 
 const router = Router();
 
-// Public routes
-router.post('/register', validate(registerSchema), register);
-router.post('/login', validate(loginSchema), login);
+// Public routes with rate limiting
+router.post('/register', authLimiter, validate(registerSchema), register);
+router.post('/login', authLimiter, validate(loginSchema), login);
 router.get('/check-email', checkEmailAvailability); // Check if email is available
 router.get('/check-phone', checkPhoneAvailability); // Check if phone is available
 
 // Protected routes
 router.get('/me', authenticate, getMe);
 router.put('/profile', authenticate, validate(updateProfileSchema), updateProfile);
-router.post('/change-password', authenticate, validate(changePasswordSchema), changePassword);
+router.post('/change-password', authenticate, passwordLimiter, validate(changePasswordSchema), changePassword);
 router.post('/logout', authenticate, logout);
 
 export default router;

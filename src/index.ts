@@ -47,9 +47,6 @@ app.use(
 
 // CORS configuration
 const allowedOrigins = [
-  "http://localhost:3000", // Frontend development
-  "http://localhost:3001", // Dashboard development
-  "https://lapipstore.ens.eg", // Production frontend
   ...(process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(",") : []),
 ];
 

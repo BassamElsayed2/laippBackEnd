@@ -46,6 +46,9 @@ export class ProductsService {
       request.input("branchId", filters.branch_id);
     }
 
+    // Always exclude soft-deleted products
+    whereConditions.push("(p.deleted_at IS NULL OR p.deleted_at = '')");
+
     const whereClause =
       whereConditions.length > 0
         ? `WHERE ${whereConditions.join(" AND ")}`
@@ -192,7 +195,7 @@ export class ProductsService {
           c.name_en as category_name_en
         FROM products p
         LEFT JOIN categories c ON p.category_id = c.id
-        WHERE p.id = @id
+        WHERE p.id = @id AND (p.deleted_at IS NULL OR p.deleted_at = '')
       `);
 
     if (productResult.recordset.length === 0) {
@@ -319,7 +322,7 @@ export class ProductsService {
       const existsCheck = await transaction
         .request()
         .input("id", id)
-        .query("SELECT id FROM products WHERE id = @id");
+        .query("SELECT id FROM products WHERE id = @id AND (deleted_at IS NULL OR deleted_at = '')");
 
       if (existsCheck.recordset.length === 0) {
         throw new ApiError(404, "Product not found");

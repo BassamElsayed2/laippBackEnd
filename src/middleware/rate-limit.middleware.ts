@@ -53,10 +53,10 @@ export const otpLimiter = rateLimit({
   },
 });
 
-// Orders routes rate limiter - 20 requests per 15 minutes
+// Orders routes rate limiter - 200 requests per 15 minutes (increased for dashboard auto-refresh)
 export const ordersLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 20,
+  max: 200, // Increased from 20 to accommodate dashboard polling
   message: "Too many order requests, please try again later.",
   handler: (req: Request, res: Response) => {
     res.status(429).json({

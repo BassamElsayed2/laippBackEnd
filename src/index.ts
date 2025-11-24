@@ -78,6 +78,9 @@ app.use(cookieParser());
 
 // Rate limiting - Import from middleware
 import { apiLimiter } from "./middleware/rateLimiter";
+import { ordersLimiter } from "./middleware/rate-limit.middleware";
+
+// Apply general rate limiter to all API routes
 app.use("/api/", apiLimiter);
 
 // CSRF Protection - Import from middleware (if exists)
@@ -119,7 +122,7 @@ app.get("/health", (req: Request, res: Response) => {
 app.use("/api/auth", authRoutes);
 app.use("/api/products", productsRoutes);
 app.use("/api/categories", categoriesRoutes);
-app.use("/api/orders", ordersRoutes);
+app.use("/api/orders", ordersLimiter, ordersRoutes); // Apply orders-specific rate limiter
 app.use("/api/payment", paymentRoutes);
 app.use("/api/content", contentRoutes);
 app.use("/api/upload", uploadRoutes);

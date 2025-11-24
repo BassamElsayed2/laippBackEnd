@@ -1,10 +1,12 @@
 import { Response, NextFunction } from "express";
 import bcrypt from "bcryptjs";
 import { v4 as uuidv4 } from "uuid";
+import sql from "mssql";
 import { getPool } from "../config/database";
 import { AuthRequest, User, Profile } from "../types";
 import { ApiError } from "../middleware/errorHandler";
 import { generateToken } from "../middleware/auth";
+import { normalizePhone } from "../utils/validation";
 
 /**
  * Register a new user
@@ -31,9 +33,10 @@ export const register = async (
 
     // Check if phone already exists (if provided)
     if (phone) {
+      const normalizedPhone = normalizePhone(phone.trim());
       const existingPhone = await pool
         .request()
-        .input("phone", phone)
+        .input("phone", normalizedPhone)
         .query("SELECT user_id FROM profiles WHERE phone = @phone");
 
       if (existingPhone.recordset.length > 0) {
@@ -81,7 +84,7 @@ export const register = async (
       .input("id", profileId)
       .input("user_id", userId)
       .input("full_name", fullName)
-      .input("phone", phone || null).query(`
+      .input("phone", phone ? normalizePhone(phone.trim()) : null).query(`
         INSERT INTO profiles (id, user_id, full_name, phone)
         VALUES (@id, @user_id, @full_name, @phone)
       `);
@@ -115,6 +118,139 @@ export const register = async (
 };
 
 /**
+ * Helper: Check if account is locked due to failed login attempts
+ */
+const checkAccountLockout = async (
+  pool: any,
+  identifier: string
+): Promise<{
+  isLocked: boolean;
+  lockedUntil: Date | null;
+  attemptsLeft: number;
+}> => {
+  const MAX_ATTEMPTS = 5;
+  const LOCKOUT_DURATION_MINUTES = 15;
+
+  try {
+    // Try to use stored procedure first
+    const result = await pool
+      .request()
+      .input("identifier", identifier.toLowerCase())
+      .output("is_locked", sql.Bit)
+      .output("locked_until", sql.DateTime2)
+      .output("attempts_left", sql.Int)
+      .execute("sp_CheckAccountLockout");
+
+    return {
+      isLocked: result.output.is_locked,
+      lockedUntil: result.output.locked_until,
+      attemptsLeft: result.output.attempts_left,
+    };
+  } catch (error: any) {
+    // If stored procedure doesn't exist, use table query
+    if (error.message?.includes("Could not find stored procedure")) {
+      const lockoutResult = await pool
+        .request()
+        .input("identifier", identifier.toLowerCase())
+        .input("lockoutMinutes", LOCKOUT_DURATION_MINUTES).query(`
+          SELECT 
+            CASE 
+              WHEN failed_attempts >= ${MAX_ATTEMPTS} AND 
+                   DATEADD(MINUTE, @lockoutMinutes, last_failed_attempt) > GETDATE()
+              THEN 1 
+              ELSE 0 
+            END as is_locked,
+            DATEADD(MINUTE, @lockoutMinutes, last_failed_attempt) as locked_until,
+            ${MAX_ATTEMPTS} - ISNULL(failed_attempts, 0) as attempts_left
+          FROM login_attempts 
+          WHERE identifier = @identifier
+        `);
+
+      const data = lockoutResult.recordset[0] || {
+        is_locked: 0,
+        locked_until: null,
+        attempts_left: MAX_ATTEMPTS,
+      };
+
+      return {
+        isLocked: !!data.is_locked,
+        lockedUntil: data.locked_until,
+        attemptsLeft: data.attempts_left,
+      };
+    }
+    throw error;
+  }
+};
+
+/**
+ * Helper: Record failed login attempt
+ */
+const recordFailedAttempt = async (
+  pool: any,
+  identifier: string
+): Promise<void> => {
+  const MAX_ATTEMPTS = 5;
+  const LOCKOUT_DURATION_MINUTES = 15;
+
+  try {
+    // Try to use stored procedure first
+    await pool
+      .request()
+      .input("identifier", identifier.toLowerCase())
+      .input("max_attempts", MAX_ATTEMPTS)
+      .input("lockout_duration_minutes", LOCKOUT_DURATION_MINUTES)
+      .output("is_locked", sql.Bit)
+      .output("attempts_left", sql.Int)
+      .output("locked_until", sql.DateTime2)
+      .execute("sp_RecordFailedAttempt");
+  } catch (error: any) {
+    // If stored procedure doesn't exist, use table query
+    if (error.message?.includes("Could not find stored procedure")) {
+      await pool.request().input("identifier", identifier.toLowerCase()).query(`
+        MERGE login_attempts AS target
+        USING (SELECT @identifier AS identifier) AS source
+        ON target.identifier = source.identifier
+        WHEN MATCHED THEN
+          UPDATE SET 
+            failed_attempts = failed_attempts + 1,
+            last_failed_attempt = GETDATE()
+        WHEN NOT MATCHED THEN
+          INSERT (identifier, failed_attempts, last_failed_attempt)
+          VALUES (@identifier, 1, GETDATE());
+      `);
+    } else {
+      throw error;
+    }
+  }
+};
+
+/**
+ * Helper: Clear failed login attempts
+ */
+const clearFailedAttempts = async (
+  pool: any,
+  identifier: string
+): Promise<void> => {
+  try {
+    // Try to use stored procedure first
+    await pool
+      .request()
+      .input("identifier", identifier.toLowerCase())
+      .execute("sp_ClearFailedAttempts");
+  } catch (error: any) {
+    // If stored procedure doesn't exist, use table query
+    if (error.message?.includes("Could not find stored procedure")) {
+      await pool
+        .request()
+        .input("identifier", identifier.toLowerCase())
+        .query(`DELETE FROM login_attempts WHERE identifier = @identifier`);
+    } else {
+      throw error;
+    }
+  }
+};
+
+/**
  * Login user (with email or phone)
  */
 export const login = async (
@@ -123,47 +259,71 @@ export const login = async (
   next: NextFunction
 ) => {
   try {
-    const { email, password } = req.body; // "email" field can contain email OR phone
+    const { email, password, rememberMe } = req.body; // "email" field can contain email OR phone
 
     const pool = getPool();
 
     // Determine if login is with email or phone
     const isEmail = email.includes("@");
+    const loginIdentifier = isEmail ? email.toLowerCase().trim() : email.trim();
+
+    // 🔒 CHECK ACCOUNT LOCKOUT
+    const lockoutStatus = await checkAccountLockout(pool, loginIdentifier);
+
+    if (lockoutStatus.isLocked) {
+      const error = new ApiError(
+        423,
+        `Account temporarily locked due to multiple failed login attempts. Please try again after ${lockoutStatus.lockedUntil?.toLocaleString()}`
+      ) as ApiError & { attemptsLeft: number };
+      error.attemptsLeft = 0;
+      throw error;
+    }
 
     let result;
 
     if (isEmail) {
-      // Login with email
-      result = await pool.request().input("email", email).query(`
+      // Login with email (case-insensitive)
+      const emailLower = email.toLowerCase().trim();
+      result = await pool.request().input("email", emailLower).query(`
           SELECT u.id, u.email, u.email_verified, u.name, u.role, 
                  u.created_at, u.updated_at, a.password_hash,
                  p.full_name, p.phone, p.avatar_url
           FROM users u
           INNER JOIN accounts a ON u.id = a.user_id
           LEFT JOIN profiles p ON u.id = p.user_id
-          WHERE u.email = @email AND a.account_type = 'email'
+          WHERE LOWER(u.email) = @email AND a.account_type = 'email'
         `);
     } else {
-      // Login with phone - join with profiles table
-      result = await pool.request().input("phone", email) // Using 'email' parameter but it contains phone
-        .query(`
+      // Login with phone - normalize phone number first
+      const normalizedPhone = normalizePhone(email.trim());
+      result = await pool.request().input("phone", normalizedPhone).query(`
           SELECT u.id, u.email, u.email_verified, u.name, u.role, 
                  u.created_at, u.updated_at, a.password_hash,
                  p.full_name, p.phone, p.avatar_url
           FROM users u
-          INNER JOIN profiles p ON u.id = p.user_id
+          LEFT JOIN profiles p ON u.id = p.user_id
           INNER JOIN accounts a ON u.id = a.user_id
           WHERE p.phone = @phone AND a.account_type = 'email'
         `);
     }
 
     if (result.recordset.length === 0) {
-      // User not found - give specific error message
-      if (isEmail) {
-        throw new ApiError(401, "No account found with this email address");
-      } else {
-        throw new ApiError(401, "No account found with this phone number");
-      }
+      // 🚨 RECORD FAILED ATTEMPT - User not found
+      await recordFailedAttempt(pool, loginIdentifier);
+
+      // Check updated lockout status to get attempts left
+      const updatedLockout = await checkAccountLockout(pool, loginIdentifier);
+
+      // User not found - give specific error message with attempts left
+      const errorMessage = isEmail
+        ? "No account found with this email address"
+        : "No account found with this phone number";
+
+      const error = new ApiError(401, errorMessage) as ApiError & {
+        attemptsLeft: number;
+      };
+      error.attemptsLeft = updatedLockout.attemptsLeft;
+      throw error;
     }
 
     const userData = result.recordset[0];
@@ -175,14 +335,28 @@ export const login = async (
     );
 
     if (!isPasswordValid) {
-      throw new ApiError(401, "Incorrect password. Please try again");
+      // 🚨 RECORD FAILED ATTEMPT - Wrong password
+      await recordFailedAttempt(pool, loginIdentifier);
+
+      // Check updated lockout status to get attempts left
+      const updatedLockout = await checkAccountLockout(pool, loginIdentifier);
+
+      const error = new ApiError(
+        401,
+        "Incorrect password. Please try again"
+      ) as ApiError & { attemptsLeft: number };
+      error.attemptsLeft = updatedLockout.attemptsLeft;
+      throw error;
     }
+
+    // ✅ CLEAR FAILED ATTEMPTS - Login successful
+    await clearFailedAttempts(pool, loginIdentifier);
 
     // Remove password hash from user object
     const { password_hash, ...user } = userData;
 
-    // Generate token
-    const token = generateToken(user as User);
+    // Generate token with Remember Me support
+    const token = generateToken(user as User, rememberMe || false);
 
     res.json({
       success: true,

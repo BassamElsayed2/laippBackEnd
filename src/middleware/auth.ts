@@ -149,15 +149,18 @@ export const requireCustomer = (
 /**
  * Generate JWT token
  */
-export const generateToken = (user: User): string => {
+export const generateToken = (user: User, rememberMe: boolean = false): string => {
   const payload: JWTPayload = {
     userId: user.id,
     email: user.email,
     role: user.role,
   };
 
+  // If rememberMe is true, token expires in 30 days, otherwise 7 days
+  const expiresIn = rememberMe ? '30d' : (process.env.JWT_EXPIRES_IN || '7d');
+
   return jwt.sign(payload, JWT_SECRET, {
-    expiresIn: process.env.JWT_EXPIRES_IN || '7d',
+    expiresIn,
   } as jwt.SignOptions);
 };
 

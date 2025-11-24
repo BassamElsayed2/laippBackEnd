@@ -71,14 +71,40 @@ app.use(
   })
 );
 
+// Body parser middleware (MUST be before other middlewares that access req.body or req.query)
+app.use(express.json({ limit: "10mb" }));
+app.use(express.urlencoded({ extended: true, limit: "10mb" }));
+app.use(cookieParser());
+
 // Rate limiting - Import from middleware
 import { apiLimiter } from "./middleware/rateLimiter";
 app.use("/api/", apiLimiter);
 
-// Body parser middleware
-app.use(express.json({ limit: "10mb" }));
-app.use(express.urlencoded({ extended: true, limit: "10mb" }));
-app.use(cookieParser());
+// CSRF Protection - Import from middleware (if exists)
+try {
+  const {
+    csrfProtection,
+    securityHeaders,
+    suspiciousActivityDetector,
+  } = require("./middleware/security.middleware");
+
+  if (csrfProtection) {
+    app.use(csrfProtection);
+    console.log("✅ CSRF Protection enabled");
+  }
+
+  if (securityHeaders) {
+    app.use(securityHeaders);
+    console.log("✅ Security Headers enabled");
+  }
+
+  if (suspiciousActivityDetector) {
+    app.use(suspiciousActivityDetector);
+    console.log("✅ Suspicious Activity Detector enabled");
+  }
+} catch (error) {
+  console.warn("⚠️ Security middleware not found, continuing without it");
+}
 
 // Health check route
 app.get("/health", (req: Request, res: Response) => {

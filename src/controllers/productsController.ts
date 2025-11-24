@@ -39,7 +39,7 @@ export const getProducts = async (
 
     if (search) {
       whereConditions.push(
-        "(title LIKE @search OR name_ar LIKE @search OR name_en LIKE @search)"
+        "(name_ar LIKE @search OR name_en LIKE @search)"
       );
       request.input("search", sql.NVarChar, `%${search}%`);
     }
@@ -72,6 +72,8 @@ export const getProducts = async (
     const request2 = pool.request();
     if (categoryId) request2.input("categoryId", sql.Int, parseInt(categoryId));
     if (search) request2.input("search", sql.NVarChar, `%${search}%`);
+    // Note: isBestSeller and limitedTimeOffer are not parameterized, they're hard-coded in the WHERE clause
+    // So we don't need to add them as parameters
     request2.input("offset", sql.Int, offset);
     request2.input("limit", sql.Int, limit);
 

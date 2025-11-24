@@ -36,32 +36,53 @@ export async function suspiciousActivityDetector(
     const ip = req.ip;
     const path = req.path;
 
-    // Check for SQL injection patterns
-    const sqlInjectionPattern =
-      /(\b(SELECT|INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|EXEC)\b|--|\/\*|\*\/|;|'|"|\bOR\b|\bAND\b)/gi;
-    const bodyStr = JSON.stringify(req.body);
-    const queryStr = JSON.stringify(req.query);
+    // Whitelist paths that should skip SQL injection detection (e.g., shipping with Arabic governorate names)
+    const whitelistedPaths = [
+      "/api/shipping/fee",
+      "/api/shipping/governorates",
+      "/api/products", // Product search with Arabic text
+      "/api/categories",
+    ];
 
-    if (
-      sqlInjectionPattern.test(bodyStr) ||
-      sqlInjectionPattern.test(queryStr)
-    ) {
-      logger.warn("Potential SQL injection detected", {
-        ip,
-        path,
-        body: req.body,
-        query: req.query,
-      });
+    const isWhitelisted = whitelistedPaths.some((whitelistedPath) =>
+      path.startsWith(whitelistedPath)
+    );
 
-      await logSecurityEvent("SUSPICIOUS_ACTIVITY", req, undefined, undefined, {
-        reason: "SQL injection attempt",
-        path,
-      });
+    if (!isWhitelisted) {
+      // Check for SQL injection patterns (more precise regex)
+      // Only detect actual SQL commands with context, not just keywords
+      const sqlInjectionPattern =
+        /(\b(SELECT|INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|EXEC)\b\s+\w+\s*\(|--|\/\*|\*\/|;\s*(SELECT|INSERT|UPDATE|DELETE|DROP)|\bUNION\b\s+\bSELECT\b)/gi;
+      const bodyStr = JSON.stringify(req.body);
+      const queryStr = JSON.stringify(req.query);
 
-      return res.status(400).json({
-        success: false,
-        message: "Invalid request",
-      });
+      if (
+        sqlInjectionPattern.test(bodyStr) ||
+        sqlInjectionPattern.test(queryStr)
+      ) {
+        logger.warn("Potential SQL injection detected", {
+          ip,
+          path,
+          body: req.body,
+          query: req.query,
+        });
+
+        await logSecurityEvent(
+          "SUSPICIOUS_ACTIVITY",
+          req,
+          undefined,
+          undefined,
+          {
+            reason: "SQL injection attempt",
+            path,
+          }
+        );
+
+        return res.status(400).json({
+          success: false,
+          message: "Invalid request",
+        });
+      }
     }
 
     // Check for XSS patterns

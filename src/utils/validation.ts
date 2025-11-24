@@ -59,21 +59,26 @@ export function sanitizeInput(input: string): string {
     .trim();
 }
 
-// Validate and normalize phone number
+// Validate and normalize phone number to Egyptian format (01xxxxxxxxx)
 export function normalizePhone(phone: string): string {
   // Remove spaces, dashes, parentheses
   let normalized = phone.replace(/[\s\-()]/g, "");
 
-  // Add +20 prefix if not present
-  if (!normalized.startsWith("+")) {
-    if (normalized.startsWith("20")) {
-      normalized = "+" + normalized;
-    } else if (normalized.startsWith("0")) {
-      normalized = "+20" + normalized.slice(1);
-    } else {
-      normalized = "+20" + normalized;
-    }
+  // Convert to Egyptian format (01xxxxxxxxx)
+  if (normalized.startsWith("+20")) {
+    // +201012345678 -> 01012345678
+    return "0" + normalized.substring(3);
+  } else if (normalized.startsWith("0020")) {
+    // 002001012345678 -> 01012345678
+    return "0" + normalized.substring(4);
+  } else if (normalized.startsWith("20") && normalized.length > 11) {
+    // 201012345678 -> 01012345678
+    return "0" + normalized.substring(2);
+  } else if (normalized.startsWith("0") && normalized.length === 11) {
+    // Already in correct format: 01012345678
+    return normalized;
+  } else {
+    // Assume it's missing the 0 prefix
+    return "0" + normalized;
   }
-
-  return normalized;
 }

@@ -6,7 +6,7 @@ export interface AppError extends Error {
 }
 
 export const errorHandler = (
-  err: AppError,
+  err: AppError & { attemptsLeft?: number },
   req: Request,
   res: Response,
   next: NextFunction
@@ -26,6 +26,7 @@ export const errorHandler = (
   res.status(statusCode).json({
     success: false,
     error: message,
+    ...(err.attemptsLeft !== undefined && { attemptsLeft: err.attemptsLeft }),
     ...(process.env.NODE_ENV === 'development' && { stack: err.stack }),
   });
 };

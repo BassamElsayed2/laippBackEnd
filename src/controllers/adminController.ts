@@ -283,12 +283,28 @@ export const getAllUsers = async (
     // Filter by search
     if (search) {
       const searchValue = `%${search}%`;
-      whereClause += ` AND (
-        u.email LIKE @param${paramIndex} 
-        OR u.name LIKE @param${paramIndex}
-        OR COALESCE(ap.full_name, p.full_name, '') LIKE @param${paramIndex}
-        OR COALESCE(ap.phone, p.phone, '') LIKE @param${paramIndex}
-      )`;
+      if (role === 'admin') {
+        whereClause += ` AND (
+          u.email LIKE @param${paramIndex} 
+          OR u.name LIKE @param${paramIndex}
+          OR ap.full_name LIKE @param${paramIndex}
+          OR ap.phone LIKE @param${paramIndex}
+        )`;
+      } else if (role === 'user') {
+        whereClause += ` AND (
+          u.email LIKE @param${paramIndex} 
+          OR u.name LIKE @param${paramIndex}
+          OR p.full_name LIKE @param${paramIndex}
+          OR p.phone LIKE @param${paramIndex}
+        )`;
+      } else {
+        whereClause += ` AND (
+          u.email LIKE @param${paramIndex} 
+          OR u.name LIKE @param${paramIndex}
+          OR COALESCE(ap.full_name, p.full_name, '') LIKE @param${paramIndex}
+          OR COALESCE(ap.phone, p.phone, '') LIKE @param${paramIndex}
+        )`;
+      }
       params.push({ name: `param${paramIndex}`, type: 'NVarChar', value: searchValue });
       paramIndex++;
     }

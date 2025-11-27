@@ -133,6 +133,7 @@ export const createOrderSchema = Joi.object({
   customer_city: Joi.string().required(),
   customer_state: Joi.string().optional(),
   customer_postcode: Joi.string().optional(),
+  voucher_code: Joi.string().optional().allow("", null),
 });
 
 export const createCategorySchema = Joi.object({

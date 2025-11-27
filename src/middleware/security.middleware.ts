@@ -36,6 +36,10 @@ export async function suspiciousActivityDetector(
     const ip = req.ip;
     const path = req.path;
 
+    // Stringify body and query for pattern matching
+    const bodyStr = JSON.stringify(req.body);
+    const queryStr = JSON.stringify(req.query);
+
     // Whitelist paths that should skip SQL injection detection (e.g., shipping with Arabic governorate names)
     const whitelistedPaths = [
       "/api/shipping/fee",
@@ -53,8 +57,6 @@ export async function suspiciousActivityDetector(
       // Only detect actual SQL commands with context, not just keywords
       const sqlInjectionPattern =
         /(\b(SELECT|INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|EXEC)\b\s+\w+\s*\(|--|\/\*|\*\/|;\s*(SELECT|INSERT|UPDATE|DELETE|DROP)|\bUNION\b\s+\bSELECT\b)/gi;
-      const bodyStr = JSON.stringify(req.body);
-      const queryStr = JSON.stringify(req.query);
 
       if (
         sqlInjectionPattern.test(bodyStr) ||
@@ -124,17 +126,38 @@ export function csrfProtection(
   // Check origin header
   const origin = req.get("origin");
   const referer = req.get("referer");
+
+  // Base allowed origins from environment
   const allowedOrigins = [
     process.env.FRONTEND_URL,
     process.env.DASHBOARD_URL,
     process.env.API_URL,
   ].filter(Boolean);
 
+  // In development, allow all localhost origins
+  const isDevelopment =
+    process.env.NODE_ENV === "development" || !process.env.NODE_ENV;
+
+  if (isDevelopment && origin) {
+    const isLocalhost =
+      origin.includes("localhost") || origin.includes("127.0.0.1");
+    if (isLocalhost) {
+      // Allow all localhost origins in development
+      return next();
+    }
+  }
+
+  // Check if origin is in allowed list
   if (
     origin &&
     !allowedOrigins.some((allowed) => origin.startsWith(allowed!))
   ) {
-    logger.warn("CSRF: Invalid origin", { origin, path: req.path });
+    logger.warn("CSRF: Invalid origin", {
+      origin,
+      path: req.path,
+      env: process.env.NODE_ENV,
+      allowedOrigins,
+    });
     return res.status(403).json({
       success: false,
       message: "Forbidden",

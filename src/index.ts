@@ -17,6 +17,7 @@ import uploadRoutes from "./routes/uploadRoutes";
 import addressesRoutes from "./routes/addressesRoutes";
 import adminRoutes from "./routes/adminRoutes";
 import shippingRoutes from "./routes/shipping.routes";
+import vouchersRoutes from "./routes/vouchers.routes";
 
 // Load environment variables
 dotenv.config();
@@ -129,6 +130,7 @@ app.use("/api/upload", uploadRoutes);
 app.use("/api/addresses", addressesRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/shipping", shippingRoutes);
+app.use("/api/vouchers", vouchersRoutes);
 
 // Root route - Also handle EasyKash callbacks that go to root
 app.get("/", (req: Request, res: Response) => {

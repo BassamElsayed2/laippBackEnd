@@ -8,6 +8,7 @@ import {
   getPaginationOffset,
   getTotalPages,
 } from "../utils/helpers";
+import { VouchersService } from "../services/vouchers.service";
 
 /**
  * Create a new order
@@ -20,7 +21,6 @@ export const createOrder = async (
   try {
     const {
       user_id,
-      total_price,
       items,
       payment_method,
       notes,
@@ -32,7 +32,13 @@ export const createOrder = async (
       customer_city,
       customer_state,
       customer_postcode,
+      voucher_code,
     } = req.body;
+
+    // Validate items
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      throw new ApiError(400, "Order must contain at least one item");
+    }
 
     const orderId = uuidv4();
     const pool = getPool();
@@ -42,12 +48,98 @@ export const createOrder = async (
     await transaction.begin();
 
     try {
-      // Insert order
+      // Step 1: Calculate subtotal from database prices (prevent price manipulation)
+      let calculatedSubtotal = 0;
+      const validatedItems = [];
+
+      for (const item of items) {
+        // Get actual price from database
+        const productResult = await transaction
+          .request()
+          .input("product_id", sql.UniqueIdentifier, item.product_id)
+          .query(`
+            SELECT id, price, stock_quantity 
+            FROM products 
+            WHERE id = @product_id AND is_active = 1
+          `);
+
+        if (productResult.recordset.length === 0) {
+          throw new ApiError(400, `Product not found or inactive: ${item.product_id}`);
+        }
+
+        const product = productResult.recordset[0];
+        
+        // Validate stock (optional - remove if you don't track stock)
+        if (product.stock_quantity !== null && product.stock_quantity < item.quantity) {
+          throw new ApiError(400, `Insufficient stock for product: ${item.product_id}`);
+        }
+
+        const itemTotal = product.price * item.quantity;
+        calculatedSubtotal += itemTotal;
+
+        validatedItems.push({
+          product_id: item.product_id,
+          quantity: item.quantity,
+          price: product.price, // Use database price, not frontend price
+        });
+      }
+
+      // Step 2: Validate and lock voucher if provided (Race condition safe)
+      let validatedVoucher = null;
+      let discountAmount = 0;
+
+      if (voucher_code && user_id) {
+        try {
+          const voucherResult = await VouchersService.validateAndLockVoucher(
+            voucher_code,
+            user_id,
+            transaction
+          );
+          
+          if (!voucherResult.valid) {
+            throw new ApiError(400, voucherResult.error || "Invalid voucher code");
+          }
+          
+          validatedVoucher = voucherResult.voucher;
+          
+          // Calculate discount
+          if (validatedVoucher) {
+            if (validatedVoucher.discount_type === "percentage") {
+              discountAmount = (calculatedSubtotal * validatedVoucher.discount_value) / 100;
+            } else {
+              discountAmount = Math.min(validatedVoucher.discount_value, calculatedSubtotal);
+            }
+          }
+        } catch (voucherError: any) {
+          // If voucher validation fails due to table not existing, continue without voucher
+          if (voucherError.message?.includes("Invalid object name 'vouchers'")) {
+            console.warn("Vouchers table not found, skipping voucher validation");
+            validatedVoucher = null;
+            discountAmount = 0;
+          } else if (voucherError instanceof ApiError) {
+            throw voucherError;
+          } else {
+            console.error("Voucher validation error:", voucherError);
+            throw new ApiError(400, "Failed to validate voucher");
+          }
+        }
+      }
+
+      // Step 3: Calculate final total
+      const originalPrice = calculatedSubtotal;
+      const finalTotalPrice = Math.max(0, calculatedSubtotal - discountAmount);
+
+      // Step 4: Insert order with voucher information
       await transaction
         .request()
         .input("id", sql.UniqueIdentifier, orderId)
         .input("user_id", sql.UniqueIdentifier, user_id || null)
-        .input("total_price", sql.Decimal(10, 2), total_price)
+        .input("total_price", sql.Decimal(10, 2), finalTotalPrice)
+        .input("original_price", sql.Decimal(10, 2), originalPrice)
+        .input("discount_amount", sql.Decimal(10, 2), discountAmount)
+        .input("voucher_code", sql.NVarChar, validatedVoucher?.code || null)
+        .input("voucher_discount_type", sql.NVarChar, validatedVoucher?.discount_type || null)
+        .input("voucher_discount_value", sql.Decimal(10, 2), validatedVoucher?.discount_value || null)
         .input("customer_first_name", sql.NVarChar, customer_first_name)
         .input("customer_last_name", sql.NVarChar, customer_last_name)
         .input("customer_phone", sql.NVarChar, customer_phone)
@@ -58,21 +150,25 @@ export const createOrder = async (
         .input("customer_postcode", sql.NVarChar, customer_postcode || null)
         .input("order_notes", sql.NVarChar(sql.MAX), notes || null).query(`
           INSERT INTO orders (
-            id, user_id, total_price, status,
+            id, user_id, total_price, original_price, discount_amount,
+            voucher_code, voucher_discount_type, voucher_discount_value,
+            status,
             customer_first_name, customer_last_name, customer_phone, customer_email,
             customer_street_address, customer_city, customer_state, customer_postcode,
             order_notes
           )
           VALUES (
-            @id, @user_id, @total_price, 'pending',
+            @id, @user_id, @total_price, @original_price, @discount_amount,
+            @voucher_code, @voucher_discount_type, @voucher_discount_value,
+            'pending',
             @customer_first_name, @customer_last_name, @customer_phone, @customer_email,
             @customer_street_address, @customer_city, @customer_state, @customer_postcode,
             @order_notes
           )
         `);
 
-      // Insert order items
-      for (const item of items) {
+      // Step 5: Insert order items with validated prices
+      for (const item of validatedItems) {
         const itemId = uuidv4();
         await transaction
           .request()
@@ -86,7 +182,7 @@ export const createOrder = async (
           `);
       }
 
-      // Insert payment record only for COD (Cash on Delivery)
+      // Step 6: Insert payment record only for COD (Cash on Delivery)
       // For EasyKash, payment record will be created by initiateEasykashPayment service
       if (payment_method === "cod") {
         const paymentId = uuidv4();
@@ -95,7 +191,7 @@ export const createOrder = async (
           .input("id", sql.UniqueIdentifier, paymentId)
           .input("order_id", sql.UniqueIdentifier, orderId)
           .input("payment_method", sql.NVarChar, payment_method)
-          .input("amount", sql.Decimal(10, 2), total_price)
+          .input("amount", sql.Decimal(10, 2), finalTotalPrice)
           .input("payment_status", sql.NVarChar, "pending")
           .input("customer_reference", sql.NVarChar, orderId).query(`
             INSERT INTO payments (id, order_id, payment_method, amount, payment_status, customer_reference)
@@ -103,7 +199,12 @@ export const createOrder = async (
           `);
       }
 
-      // Commit transaction
+      // Step 7: Mark voucher as used if one was applied (INSIDE transaction - critical!)
+      if (validatedVoucher) {
+        await VouchersService.useVoucher(validatedVoucher.id, orderId, transaction);
+      }
+
+      // Step 8: Commit transaction
       await transaction.commit();
 
       // Get created order with items

@@ -84,18 +84,19 @@ import { ordersLimiter } from "./middleware/rate-limit.middleware";
 // Apply general rate limiter to all API routes
 app.use("/api/", apiLimiter);
 
-// CSRF Protection - Import from middleware (if exists)
+// CSRF Protection - DISABLED
+// Security middleware - Import from middleware (if exists)
 try {
   const {
-    csrfProtection,
     securityHeaders,
     suspiciousActivityDetector,
   } = require("./middleware/security.middleware");
 
-  if (csrfProtection) {
-    app.use(csrfProtection);
-    console.log("✅ CSRF Protection enabled");
-  }
+  // CSRF Protection is disabled
+  // if (csrfProtection) {
+  //   app.use(csrfProtection);
+  //   console.log("✅ CSRF Protection enabled");
+  // }
 
   if (securityHeaders) {
     app.use(securityHeaders);

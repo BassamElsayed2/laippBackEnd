@@ -33,7 +33,15 @@ export const createOrder = async (
       customer_state,
       customer_postcode,
       voucher_code,
+      shipping_fee,
     } = req.body;
+
+    console.log("📦 Creating order with data:", {
+      itemsCount: items?.length,
+      payment_method,
+      voucher_code: voucher_code || "none",
+      shipping_fee: shipping_fee !== undefined ? shipping_fee : "not provided",
+    });
 
     // Validate items
     if (!items || !Array.isArray(items) || items.length === 0) {
@@ -43,7 +51,8 @@ export const createOrder = async (
     const orderId = uuidv4();
     const pool = getPool();
 
-    // Begin transaction
+    // Begin transaction with READ COMMITTED isolation level (default)
+    // This provides good balance between performance and data consistency
     const transaction = pool.transaction();
     await transaction.begin();
 
@@ -56,22 +65,30 @@ export const createOrder = async (
         // Get actual price from database
         const productResult = await transaction
           .request()
-          .input("product_id", sql.UniqueIdentifier, item.product_id)
-          .query(`
+          .input("product_id", sql.UniqueIdentifier, item.product_id).query(`
             SELECT id, price, stock_quantity 
             FROM products 
             WHERE id = @product_id AND is_active = 1
           `);
 
         if (productResult.recordset.length === 0) {
-          throw new ApiError(400, `Product not found or inactive: ${item.product_id}`);
+          throw new ApiError(
+            400,
+            `Product not found or inactive: ${item.product_id}`
+          );
         }
 
         const product = productResult.recordset[0];
-        
+
         // Validate stock (optional - remove if you don't track stock)
-        if (product.stock_quantity !== null && product.stock_quantity < item.quantity) {
-          throw new ApiError(400, `Insufficient stock for product: ${item.product_id}`);
+        if (
+          product.stock_quantity !== null &&
+          product.stock_quantity < item.quantity
+        ) {
+          throw new ApiError(
+            400,
+            `Insufficient stock for product: ${item.product_id}`
+          );
         }
 
         const itemTotal = product.price * item.quantity;
@@ -84,50 +101,80 @@ export const createOrder = async (
         });
       }
 
-      // Step 2: Validate and lock voucher if provided (Race condition safe)
+      // Step 2: Validate voucher if provided (simplified - validate outside transaction first)
       let validatedVoucher = null;
       let discountAmount = 0;
 
       if (voucher_code && user_id) {
         try {
-          const voucherResult = await VouchersService.validateAndLockVoucher(
+          console.log("🔍 Starting voucher validation...", { voucher_code, user_id });
+          const startTime = Date.now();
+          
+          // First, quick validation outside transaction (fast, no locks)
+          const quickValidation = await VouchersService.validateVoucher(
             voucher_code,
-            user_id,
-            transaction
+            user_id
           );
           
-          if (!voucherResult.valid) {
-            throw new ApiError(400, voucherResult.error || "Invalid voucher code");
+          if (!quickValidation.valid) {
+            throw new ApiError(400, quickValidation.error || "Invalid voucher code");
           }
           
-          validatedVoucher = voucherResult.voucher;
-          
+          console.log("✅ Quick validation passed, voucher is valid");
+          validatedVoucher = quickValidation.voucher;
+
           // Calculate discount
           if (validatedVoucher) {
             if (validatedVoucher.discount_type === "percentage") {
-              discountAmount = (calculatedSubtotal * validatedVoucher.discount_value) / 100;
+              discountAmount =
+                (calculatedSubtotal * validatedVoucher.discount_value) / 100;
             } else {
-              discountAmount = Math.min(validatedVoucher.discount_value, calculatedSubtotal);
+              discountAmount = Math.min(
+                validatedVoucher.discount_value,
+                calculatedSubtotal
+              );
             }
           }
+          
+          const validationTime = Date.now() - startTime;
+          console.log(`✅ Voucher validation completed in ${validationTime}ms`, { 
+            valid: true, 
+            discountAmount 
+          });
         } catch (voucherError: any) {
           // If voucher validation fails due to table not existing, continue without voucher
-          if (voucherError.message?.includes("Invalid object name 'vouchers'")) {
-            console.warn("Vouchers table not found, skipping voucher validation");
+          if (
+            voucherError.message?.includes("Invalid object name 'vouchers'")
+          ) {
+            console.warn(
+              "Vouchers table not found, skipping voucher validation"
+            );
             validatedVoucher = null;
             discountAmount = 0;
           } else if (voucherError instanceof ApiError) {
             throw voucherError;
           } else {
             console.error("Voucher validation error:", voucherError);
-            throw new ApiError(400, "Failed to validate voucher");
+            throw new ApiError(
+              400,
+              voucherError.message || "Failed to validate voucher"
+            );
           }
         }
       }
 
       // Step 3: Calculate final total
-      const originalPrice = calculatedSubtotal;
-      const finalTotalPrice = Math.max(0, calculatedSubtotal - discountAmount);
+      const shippingFee = shipping_fee !== undefined && shipping_fee !== null ? Number(shipping_fee) : 0;
+      const originalPrice = calculatedSubtotal + shippingFee;
+      const finalTotalPrice = Math.max(0, calculatedSubtotal + shippingFee - discountAmount);
+
+      console.log("💰 Order totals calculated:", {
+        calculatedSubtotal,
+        shippingFee,
+        discountAmount,
+        originalPrice,
+        finalTotalPrice,
+      });
 
       // Step 4: Insert order with voucher information
       await transaction
@@ -138,8 +185,16 @@ export const createOrder = async (
         .input("original_price", sql.Decimal(10, 2), originalPrice)
         .input("discount_amount", sql.Decimal(10, 2), discountAmount)
         .input("voucher_code", sql.NVarChar, validatedVoucher?.code || null)
-        .input("voucher_discount_type", sql.NVarChar, validatedVoucher?.discount_type || null)
-        .input("voucher_discount_value", sql.Decimal(10, 2), validatedVoucher?.discount_value || null)
+        .input(
+          "voucher_discount_type",
+          sql.NVarChar,
+          validatedVoucher?.discount_type || null
+        )
+        .input(
+          "voucher_discount_value",
+          sql.Decimal(10, 2),
+          validatedVoucher?.discount_value || null
+        )
         .input("customer_first_name", sql.NVarChar, customer_first_name)
         .input("customer_last_name", sql.NVarChar, customer_last_name)
         .input("customer_phone", sql.NVarChar, customer_phone)
@@ -199,13 +254,15 @@ export const createOrder = async (
           `);
       }
 
-      // Step 7: Mark voucher as used if one was applied (INSIDE transaction - critical!)
-      if (validatedVoucher) {
-        await VouchersService.useVoucher(validatedVoucher.id, orderId, transaction);
-      }
+      // Step 7: Don't mark voucher as used yet - wait for payment confirmation
+      // Voucher will be marked as used only after successful payment in payment callback
 
       // Step 8: Commit transaction
+      console.log("💾 Committing transaction...");
+      const commitStartTime = Date.now();
       await transaction.commit();
+      const commitTime = Date.now() - commitStartTime;
+      console.log(`✅ Transaction committed in ${commitTime}ms`);
 
       // Get created order with items
       const orderResult = await pool

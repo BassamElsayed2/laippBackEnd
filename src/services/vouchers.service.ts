@@ -160,16 +160,27 @@ export class VouchersService {
    */
   static async getVoucherByCode(code: string): Promise<Voucher | null> {
     const pool = getPool();
+    const upperCode = code.toUpperCase();
 
-    const result = await pool.request().input("code", sql.NVarChar, code.toUpperCase())
-      .query(`
-        SELECT 
-          v.*,
-          p.full_name as user_name,
-          u.email as user_email
+    // Try exact match first (assuming codes are stored in uppercase)
+    let result = await pool
+      .request()
+      .input("code", sql.NVarChar, upperCode).query(`
+        SELECT v.*
         FROM vouchers v
-        LEFT JOIN users u ON v.user_id = u.id
-        LEFT JOIN profiles p ON u.id = p.user_id
+        WHERE v.code = @code
+      `);
+
+    if (result.recordset.length > 0) {
+      return result.recordset[0];
+    }
+
+    // Fallback: try case-insensitive search if exact match fails
+    result = await pool
+      .request()
+      .input("code", sql.NVarChar, upperCode).query(`
+        SELECT v.*
+        FROM vouchers v
         WHERE UPPER(v.code) = @code
       `);
 
@@ -322,69 +333,84 @@ export class VouchersService {
     voucher?: Voucher;
     error?: string;
   }> {
-    // Lock and validate voucher in a single atomic operation
-    const result = await transaction
-      .request()
-      .input("code", sql.NVarChar, code.toUpperCase())
-      .input("user_id", sql.UniqueIdentifier, userId)
-      .query(`
-        SELECT 
-          v.*,
-          p.full_name as user_name,
-          u.email as user_email
-        FROM vouchers v WITH (UPDLOCK, HOLDLOCK)
-        LEFT JOIN users u ON v.user_id = u.id
-        LEFT JOIN profiles p ON u.id = p.user_id
-        WHERE UPPER(v.code) = @code
-        AND v.user_id = @user_id
-        AND v.is_active = 1
-        AND v.is_used = 0
-        AND (v.expires_at IS NULL OR v.expires_at > GETDATE())
-      `);
-
-    if (result.recordset.length === 0) {
-      // Try to get the voucher to provide a more specific error message
-      const voucherCheck = await transaction
+    try {
+      // Validate voucher - simplified query without UPPER() to use index if available
+      // Using transaction isolation for consistency
+      console.log("🔍 Executing voucher query in transaction...", { code: code.toUpperCase(), userId });
+      const queryStartTime = Date.now();
+      
+      const result = await transaction
         .request()
         .input("code", sql.NVarChar, code.toUpperCase())
+        .input("user_id", sql.UniqueIdentifier, userId)
         .query(`
-          SELECT * FROM vouchers WHERE UPPER(code) = @code
+          SELECT 
+            v.*
+          FROM vouchers v
+          WHERE v.code = @code
+          AND v.user_id = @user_id
+          AND v.is_active = 1
+          AND v.is_used = 0
+          AND (v.expires_at IS NULL OR v.expires_at > GETDATE())
         `);
+      
+      const queryTime = Date.now() - queryStartTime;
+      console.log(`⏱️ Voucher query completed in ${queryTime}ms`, { found: result.recordset.length > 0 });
 
-      if (voucherCheck.recordset.length === 0) {
-        return { valid: false, error: "Voucher not found" };
+      if (result.recordset.length === 0) {
+        // Try to get the voucher to provide a more specific error message (without transaction for speed)
+        const pool = getPool();
+        const voucherCheck = await pool
+          .request()
+          .input("code", sql.NVarChar, code.toUpperCase()).query(`
+            SELECT * FROM vouchers WHERE code = @code
+          `);
+
+        if (voucherCheck.recordset.length === 0) {
+          return { valid: false, error: "Voucher not found" };
+        }
+
+        const voucher = voucherCheck.recordset[0];
+        if (!voucher.is_active) {
+          return { valid: false, error: "Voucher is not active" };
+        }
+        if (voucher.is_used) {
+          return { valid: false, error: "Voucher has already been used" };
+        }
+        if (voucher.user_id !== userId) {
+          return { valid: false, error: "Voucher is not assigned to this user" };
+        }
+        if (voucher.expires_at && new Date(voucher.expires_at) < new Date()) {
+          return { valid: false, error: "Voucher has expired" };
+        }
+
+        return { valid: false, error: "Invalid voucher" };
       }
 
-      const voucher = voucherCheck.recordset[0];
-      if (!voucher.is_active) {
-        return { valid: false, error: "Voucher is not active" };
+      return { valid: true, voucher: result.recordset[0] };
+    } catch (error: any) {
+      console.error("Error in validateAndLockVoucher:", error);
+      // If there's a timeout or deadlock, return a clear error
+      if (error.message?.includes("timeout") || error.message?.includes("deadlock")) {
+        throw new Error("Voucher validation timed out. Please try again.");
       }
-      if (voucher.is_used) {
-        return { valid: false, error: "Voucher has already been used" };
-      }
-      if (voucher.user_id !== userId) {
-        return { valid: false, error: "Voucher is not assigned to this user" };
-      }
-      if (voucher.expires_at && new Date(voucher.expires_at) < new Date()) {
-        return { valid: false, error: "Voucher has expired" };
-      }
-
-      return { valid: false, error: "Invalid voucher" };
+      throw error;
     }
-
-    return { valid: true, voucher: result.recordset[0] };
   }
 
   /**
    * Mark voucher as used (with optional transaction support)
    */
   static async useVoucher(
-    id: string, 
-    orderId: string, 
+    id: string,
+    orderId: string,
     transaction?: any
   ): Promise<Voucher | null> {
-    const requestObj = transaction ? transaction.request() : getPool().request();
+    const requestObj = transaction
+      ? transaction.request()
+      : getPool().request();
 
+    // Update voucher (can't use OUTPUT clause if table has triggers)
     await requestObj
       .input("id", sql.UniqueIdentifier, id)
       .input("order_id", sql.UniqueIdentifier, orderId).query(`
@@ -392,6 +418,16 @@ export class VouchersService {
         SET is_used = 1, used_at = GETDATE(), used_order_id = @order_id
         WHERE id = @id
       `);
+
+    // Get updated voucher (if inside transaction, use transaction request)
+    if (transaction) {
+      const getResult = await transaction
+        .request()
+        .input("id", sql.UniqueIdentifier, id).query(`
+          SELECT * FROM vouchers WHERE id = @id
+        `);
+      return getResult.recordset[0] || null;
+    }
 
     return this.getVoucherById(id);
   }
@@ -482,9 +518,7 @@ export class VouchersService {
   /**
    * Find user by phone number
    */
-  static async findUserByPhone(
-    phone: string
-  ): Promise<{
+  static async findUserByPhone(phone: string): Promise<{
     id: string;
     email: string;
     full_name: string;
@@ -496,7 +530,9 @@ export class VouchersService {
     // Normalize phone number (remove spaces, dashes, and handle different formats)
     const normalizedPhone = phone.replace(/[\s\-\(\)]/g, "");
 
-    const result = await pool.request().input("phone", sql.NVarChar, normalizedPhone).query(`
+    const result = await pool
+      .request()
+      .input("phone", sql.NVarChar, normalizedPhone).query(`
         SELECT 
           u.id,
           u.email,
@@ -556,7 +592,7 @@ export class VouchersService {
     for (const user of users) {
       try {
         // Generate unique code for each user
-        const code = data.code_prefix 
+        const code = data.code_prefix
           ? `${data.code_prefix}-${this.generateShortCode()}`
           : generateVoucherCode();
 
@@ -598,14 +634,10 @@ export class VouchersService {
   /**
    * Calculate discount amount
    */
-  static calculateDiscount(
-    voucher: Voucher,
-    totalAmount: number
-  ): number {
+  static calculateDiscount(voucher: Voucher, totalAmount: number): number {
     if (voucher.discount_type === "percentage") {
       return (totalAmount * voucher.discount_value) / 100;
     }
     return Math.min(voucher.discount_value, totalAmount);
   }
 }
-

@@ -112,7 +112,7 @@ export const createProductSchema = Joi.object({
 
 export const createOrderSchema = Joi.object({
   user_id: Joi.string().uuid().optional().allow(null),
-  total_price: Joi.number().positive().required(),
+  // total_price is calculated automatically from items, so it's not required in validation
   items: Joi.array()
     .items(
       Joi.object({
@@ -134,6 +134,7 @@ export const createOrderSchema = Joi.object({
   customer_state: Joi.string().optional(),
   customer_postcode: Joi.string().optional(),
   voucher_code: Joi.string().optional().allow("", null),
+  shipping_fee: Joi.number().min(0).optional().allow(null).default(0),
 });
 
 export const createCategorySchema = Joi.object({

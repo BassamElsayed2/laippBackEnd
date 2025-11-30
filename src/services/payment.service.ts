@@ -1,6 +1,7 @@
 import { getPool, sql } from "../config/database";
 import { ApiError } from "../middleware/errorHandler";
 import crypto from "crypto";
+import { VouchersService } from "./vouchers.service";
 
 export interface InitiatePaymentData {
   order_id: string;
@@ -626,6 +627,29 @@ export class PaymentService {
               updated_at = GETDATE()
             WHERE id = @orderId
           `);
+
+        // Mark voucher as used only after successful payment
+        const orderResult = await pool
+          .request()
+          .input("orderId", sql.UniqueIdentifier, customData.orderId).query(`
+            SELECT voucher_code FROM orders WHERE id = @orderId
+          `);
+
+        if (orderResult.recordset.length > 0 && orderResult.recordset[0].voucher_code) {
+          const voucherCode = orderResult.recordset[0].voucher_code;
+          try {
+            // Get voucher by code
+            const voucher = await VouchersService.getVoucherByCode(voucherCode);
+            if (voucher && !voucher.is_used) {
+              // Mark voucher as used
+              await VouchersService.useVoucher(voucher.id, customData.orderId);
+              console.log(`✅ Voucher ${voucherCode} marked as used after successful payment`);
+            }
+          } catch (voucherError: any) {
+            // Log error but don't fail the payment callback
+            console.error("Error marking voucher as used:", voucherError);
+          }
+        }
       } else if (
         paymentStatus === "failed" ||
         paymentStatus === "cancelled" ||

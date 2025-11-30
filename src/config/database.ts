@@ -13,6 +13,7 @@ const config: sql.config = {
     encrypt: process.env.DB_ENCRYPT === "true",
     trustServerCertificate: process.env.DB_TRUST_SERVER_CERTIFICATE === "true",
     enableArithAbort: true,
+    requestTimeout: 30000, // 30 seconds timeout for requests
   },
   pool: {
     max: 10,

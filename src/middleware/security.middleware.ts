@@ -127,11 +127,9 @@ export function csrfProtection(
   const origin = req.get("origin");
   const referer = req.get("referer");
 
-  // Base allowed origins from environment
+  // Use same allowed origins as CORS configuration
   const allowedOrigins = [
-    process.env.FRONTEND_URL,
-    process.env.DASHBOARD_URL,
-    process.env.API_URL,
+    ...(process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(",") : []),
   ].filter(Boolean);
 
   // In development, allow all localhost origins

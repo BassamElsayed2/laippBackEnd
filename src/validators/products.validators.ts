@@ -44,8 +44,8 @@ export const updateProductSchema = z.object({
 });
 
 export const getProductsQuerySchema = z.object({
-  page: z.string().regex(/^\d+$/).transform(Number).optional().default(1),
-  limit: z.string().regex(/^\d+$/).transform(Number).optional().default(10),
+  page: z.string().regex(/^\d+$/).transform(Number).optional().default("1"),
+  limit: z.string().regex(/^\d+$/).transform(Number).optional().default("10"),
   category_id: uuidSchema.optional(),
   branch_id: uuidSchema.optional(),
   search: z.string().max(255).optional(),

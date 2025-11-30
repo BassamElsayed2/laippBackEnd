@@ -42,8 +42,8 @@ export const updateOrderStatusSchema = z.object({
 });
 
 export const getOrdersQuerySchema = z.object({
-  page: z.string().regex(/^\d+$/).transform(Number).optional().default(1),
-  limit: z.string().regex(/^\d+$/).transform(Number).optional().default(10),
+  page: z.string().regex(/^\d+$/).transform(Number).optional().default("1"),
+  limit: z.string().regex(/^\d+$/).transform(Number).optional().default("10"),
   status: z
     .enum([
       "pending",

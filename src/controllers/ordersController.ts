@@ -98,6 +98,7 @@ export const createOrder = async (
           product_id: item.product_id,
           quantity: item.quantity,
           price: product.price, // Use database price, not frontend price
+          track_stock: product.stock_quantity !== null,
         });
       }
 
@@ -235,6 +236,37 @@ export const createOrder = async (
             INSERT INTO order_items (id, order_id, product_id, quantity, price)
             VALUES (@id, @order_id, @product_id, @quantity, @price)
           `);
+      }
+
+      // Step 5b: Decrement stock (atomic; handles concurrent orders)
+      for (const item of validatedItems as Array<{
+        product_id: string;
+        quantity: number;
+        price: number;
+        track_stock: boolean;
+      }>) {
+        if (!item.track_stock) continue;
+
+        const stockResult = await transaction
+          .request()
+          .input("product_id", sql.UniqueIdentifier, item.product_id)
+          .input("qty", sql.Int, item.quantity)
+          .query(`
+            UPDATE products
+            SET stock_quantity = stock_quantity - @qty,
+                updated_at = GETDATE()
+            WHERE id = @product_id
+              AND is_active = 1
+              AND stock_quantity IS NOT NULL
+              AND stock_quantity >= @qty
+          `);
+
+        if (stockResult.rowsAffected[0] === 0) {
+          throw new ApiError(
+            400,
+            `Insufficient stock for product: ${item.product_id}`
+          );
+        }
       }
 
       // Step 6: Insert payment record only for COD (Cash on Delivery)

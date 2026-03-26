@@ -1,20 +1,25 @@
 import { Response, NextFunction } from 'express';
 import multer from 'multer';
 import { v4 as uuidv4 } from 'uuid';
+import path from 'path';
+import fs from 'fs';
 import { AuthRequest } from '../types';
 import { ApiError } from '../middleware/errorHandler';
-import supabaseStorage from '../config/supabase';
 
-// Configure multer for memory storage
+const UPLOADS_DIR = path.join(process.cwd(), 'uploads');
+
+if (!fs.existsSync(UPLOADS_DIR)) {
+  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+}
+
 const storage = multer.memoryStorage();
 
 export const upload = multer({
   storage,
   limits: {
-    fileSize: 5 * 1024 * 1024, // 5MB limit
+    fileSize: 5 * 1024 * 1024,
   },
   fileFilter: (req, file, cb) => {
-    // Accept images only
     if (!file.mimetype.startsWith('image/')) {
       return cb(new Error('Only image files are allowed'));
     }
@@ -22,9 +27,18 @@ export const upload = multer({
   },
 });
 
-/**
- * Upload file to Supabase Storage
- */
+function getPublicUrl(filePath: string, req?: any): string {
+  if (req) {
+    const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http';
+    const host = req.headers['x-forwarded-host'] || req.get('host');
+    if (host) {
+      return `${protocol}://${host}/uploads/${filePath.replace(/\\/g, '/')}`;
+    }
+  }
+  const apiUrl = process.env.API_URL || `http://localhost:${process.env.PORT || 5000}`;
+  return `${apiUrl}/uploads/${filePath.replace(/\\/g, '/')}`;
+}
+
 export const uploadFile = async (
   req: AuthRequest,
   res: Response,
@@ -38,33 +52,24 @@ export const uploadFile = async (
     const folder = (req.body.folder as string) || 'general';
     const file = req.file;
 
-    // Generate unique filename
     const fileExt = file.originalname.split('.').pop();
     const fileName = `${uuidv4()}.${fileExt}`;
-    const filePath = `${folder}/${fileName}`;
+    const folderPath = path.join(UPLOADS_DIR, folder);
 
-    // Upload to Supabase Storage
-    const { data, error } = await supabaseStorage.storage
-      .from('lapip-storage') // Your Supabase storage bucket name
-      .upload(filePath, file.buffer, {
-        contentType: file.mimetype,
-        cacheControl: '3600',
-      });
-
-    if (error) {
-      console.error('Supabase upload error:', error);
-      throw new ApiError(500, 'Failed to upload file');
+    if (!fs.existsSync(folderPath)) {
+      fs.mkdirSync(folderPath, { recursive: true });
     }
 
-    // Get public URL
-    const { data: urlData } = supabaseStorage.storage
-      .from('lapip-storage')
-      .getPublicUrl(filePath);
+    const diskPath = path.join(folderPath, fileName);
+    fs.writeFileSync(diskPath, file.buffer);
+
+    const filePath = `${folder}/${fileName}`;
+    const publicUrl = getPublicUrl(filePath, req);
 
     res.json({
       success: true,
       data: {
-        url: urlData.publicUrl,
+        url: publicUrl,
         path: filePath,
         filename: fileName,
       },
@@ -75,9 +80,6 @@ export const uploadFile = async (
   }
 };
 
-/**
- * Upload multiple files to Supabase Storage
- */
 export const uploadMultipleFiles = async (
   req: AuthRequest,
   res: Response,
@@ -91,34 +93,26 @@ export const uploadMultipleFiles = async (
     }
 
     const folder = (req.body.folder as string) || 'general';
+    const folderPath = path.join(UPLOADS_DIR, folder);
+
+    if (!fs.existsSync(folderPath)) {
+      fs.mkdirSync(folderPath, { recursive: true });
+    }
+
     const uploadedFiles = [];
 
     for (const file of files) {
-      // Generate unique filename
       const fileExt = file.originalname.split('.').pop();
       const fileName = `${uuidv4()}.${fileExt}`;
+      const diskPath = path.join(folderPath, fileName);
+
+      fs.writeFileSync(diskPath, file.buffer);
+
       const filePath = `${folder}/${fileName}`;
-
-      // Upload to Supabase Storage
-      const { data, error } = await supabaseStorage.storage
-        .from('lapip-storage')
-        .upload(filePath, file.buffer, {
-          contentType: file.mimetype,
-          cacheControl: '3600',
-        });
-
-      if (error) {
-        console.error('Supabase upload error:', error);
-        continue; // Skip this file and continue with others
-      }
-
-      // Get public URL
-      const { data: urlData } = supabaseStorage.storage
-        .from('lapip-storage')
-        .getPublicUrl(filePath);
+      const publicUrl = getPublicUrl(filePath, req);
 
       uploadedFiles.push({
-        url: urlData.publicUrl,
+        url: publicUrl,
         path: filePath,
         filename: fileName,
       });
@@ -134,29 +128,22 @@ export const uploadMultipleFiles = async (
   }
 };
 
-/**
- * Delete file from Supabase Storage
- */
 export const deleteFile = async (
   req: AuthRequest,
   res: Response,
   next: NextFunction
 ) => {
   try {
-    const { path } = req.body;
+    const { path: filePath } = req.body;
 
-    if (!path) {
+    if (!filePath) {
       throw new ApiError(400, 'File path is required');
     }
 
-    // Delete from Supabase Storage
-    const { error } = await supabaseStorage.storage
-      .from('lapip-storage')
-      .remove([path]);
+    const diskPath = path.join(UPLOADS_DIR, filePath);
 
-    if (error) {
-      console.error('Supabase delete error:', error);
-      throw new ApiError(500, 'Failed to delete file');
+    if (fs.existsSync(diskPath)) {
+      fs.unlinkSync(diskPath);
     }
 
     res.json({
@@ -167,5 +154,3 @@ export const deleteFile = async (
     next(error);
   }
 };
-
-

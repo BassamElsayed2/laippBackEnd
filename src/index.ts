@@ -3,6 +3,7 @@ import cors from "cors";
 import helmet from "helmet";
 import cookieParser from "cookie-parser";
 import dotenv from "dotenv";
+import path from "path";
 import { connectDB } from "./config/database";
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler";
 
@@ -18,6 +19,7 @@ import addressesRoutes from "./routes/addressesRoutes";
 import adminRoutes from "./routes/adminRoutes";
 import shippingRoutes from "./routes/shipping.routes";
 import vouchersRoutes from "./routes/vouchers.routes";
+import migrationRoutes from "./routes/migration.routes";
 
 // Load environment variables
 dotenv.config();
@@ -43,12 +45,14 @@ app.use(
     },
     crossOriginEmbedderPolicy: false, // Allow external resources
     crossOriginResourcePolicy: { policy: "cross-origin" }, // Allow CORS
-  })
+  }),
 );
 
 // CORS configuration
 const allowedOrigins = [
-  ...(process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(",") : []),
+  ...(process.env.CORS_ORIGIN
+    ? process.env.CORS_ORIGIN.split(",")
+    : ["https://lapip.net", "https://cp.lapip.net"]),
 ];
 
 app.use(
@@ -69,7 +73,7 @@ app.use(
     },
     credentials: true,
     optionsSuccessStatus: 200,
-  })
+  }),
 );
 
 // Body parser middleware (MUST be before other middlewares that access req.body or req.query)
@@ -111,6 +115,9 @@ try {
   console.warn("⚠️ Security middleware not found, continuing without it");
 }
 
+// Serve uploaded files statically
+app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
+
 // Health check route
 app.get("/health", (req: Request, res: Response) => {
   res.json({
@@ -132,6 +139,7 @@ app.use("/api/addresses", addressesRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/shipping", shippingRoutes);
 app.use("/api/vouchers", vouchersRoutes);
+app.use("/api/migration", migrationRoutes);
 
 // Root route - Also handle EasyKash callbacks that go to root
 app.get("/", (req: Request, res: Response) => {

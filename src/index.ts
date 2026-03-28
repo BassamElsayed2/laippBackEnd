@@ -48,10 +48,15 @@ app.use(
   }),
 );
 
-// CORS configuration
+// CORS configuration — normalize so env values like "https://lapip.net/" match browser Origin (no slash)
+const normalizeOriginUrl = (value: string) =>
+  value.trim().replace(/\/+$/, "");
+
 const allowedOrigins = [
   ...(process.env.CORS_ORIGIN
     ? process.env.CORS_ORIGIN.split(",")
+        .map(normalizeOriginUrl)
+        .filter(Boolean)
     : ["https://lapip.net", "https://cp.lapip.net"]),
 ];
 
@@ -63,7 +68,8 @@ app.use(
         return callback(null, true);
       }
 
-      if (allowedOrigins.indexOf(origin!) !== -1) {
+      const requestOrigin = origin ? normalizeOriginUrl(origin) : origin;
+      if (requestOrigin && allowedOrigins.includes(requestOrigin)) {
         callback(null, true);
       } else {
         console.warn(`CORS blocked origin: ${origin}`);

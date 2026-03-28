@@ -6,15 +6,7 @@
   "scripts": {
     "dev": "nodemon src/index.ts",
     "build": "tsc",
-    "start": "node dist/index.js",
-    "migrate": "ts-node src/scripts/migrate-data.ts",
-    "create-admin": "ts-node src/scripts/create-admin-user.ts",
-    "quick-setup": "ts-node src/scripts/quick-setup-admin.ts",
-    "create-admin-simple": "node create-admin-simple.js",
-    "fix-profiles": "ts-node src/scripts/create-missing-profiles.ts",
-    "fix-admin-profile": "ts-node src/scripts/fix-admin-profile.ts",
-    "update-products-table": "sqlcmd -S localhost -d lapipDb -E -i src/scripts/update-products-table.sql",
-    "create-shipping-fees-table": "ts-node src/scripts/run-sql-file.ts src/scripts/create-shipping-fees-table.sql"
+    "start": "node dist/index.js"
   },
   "keywords": [
     "express",
@@ -51,6 +43,7 @@
     "@types/bcryptjs": "^2.4.6",
     "@types/cookie-parser": "^1.4.10",
     "@types/cors": "^2.8.17",
+    "@types/crypto-js": "^4.2.2",
     "@types/express": "^4.17.21",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/mssql": "^9.1.8",

@@ -91,8 +91,8 @@ export const handlePaymentCallback = asyncHandler(
 
 /**
  * Handle EasyKash redirect callback (when user returns from payment page)
- * This handles the redirect URL parameters: status, providerRefNum, customerReference, voucher
- * NOTE: This is just the redirect - the actual payment status comes from the webhook/callback
+ * Webhook should update the DB first; if it did not (firewall, HMAC, delay), we complete payment
+ * when redirect says PAID and the payment row is still pending.
  */
 export const handlePaymentRedirect = asyncHandler(
   async (req: AuthRequest, res: Response, next: NextFunction) => {
@@ -137,21 +137,31 @@ export const handlePaymentRedirect = asyncHandler(
     console.log("📊 Current payment status in DB:", payment.payment_status);
     console.log("📊 Redirect status:", status);
 
-    // IMPORTANT: The redirect status is NOT the final payment status
-    // The real status comes from the webhook/callback
-    // But we can return the current DB status for the frontend to poll
+    const completedFromRedirect =
+      await PaymentService.maybeCompleteEasykashFromRedirect(
+        payment,
+        status as string,
+        (providerRefNum as string) || undefined,
+        (voucher as string) || undefined
+      );
+
+    const paymentStatusOut = completedFromRedirect
+      ? "completed"
+      : payment.payment_status;
 
     res.json({
       success: true,
       data: {
         order_id: payment.order_id,
-        payment_status: payment.payment_status, // Return current DB status
-        redirect_status: status, // The status from redirect (may not be accurate)
+        payment_status: paymentStatusOut,
+        redirect_status: status,
         providerRefNum: providerRefNum || null,
         voucher: voucher || null,
+        synced_from_redirect: completedFromRedirect,
       },
-      message:
-        "Payment redirect received. Please wait for final confirmation from payment gateway.",
+      message: completedFromRedirect
+        ? "Payment confirmed from return URL; order updated."
+        : "Payment redirect received. Please wait for final confirmation from payment gateway.",
     });
   }
 );

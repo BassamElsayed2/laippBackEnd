@@ -45,6 +45,141 @@ export class PaymentService {
   private static readonly BACKEND_URL =
     process.env.API_URL || process.env.BACKEND_URL;
 
+  /** Avoid https://host//path — double slash makes browsers treat //segment as another host (e.g. "ar"). */
+  private static joinPublicUrl(
+    base: string | undefined,
+    path: string
+  ): string {
+    const b = (base || "").replace(/\/+$/, "");
+    const p = path.startsWith("/") ? path : `/${path}`;
+    return `${b}${p}`;
+  }
+
+  /**
+   * Query params on EasyKash return URL (e.g. status=PAID). Webhook may be late or fail to reach the server.
+   */
+  static isBrowserRedirectPaid(status: string | null | undefined): boolean {
+    const s = String(status ?? "")
+      .trim()
+      .toLowerCase();
+    return (
+      s === "paid" ||
+      s === "success" ||
+      s === "completed" ||
+      s === "delivered"
+    );
+  }
+
+  /**
+   * Mark EasyKash payment completed and confirm order (shared by webhook + browser redirect).
+   */
+  private static async applyEasykashPaymentCompleted(
+    paymentId: string,
+    orderId: string,
+    opts: {
+      easykashRef?: string | null;
+      voucher?: string | null;
+      paymentProvider?: string | null;
+    }
+  ): Promise<void> {
+    const pool = getPool();
+    const easykashRef = opts.easykashRef ?? null;
+    const voucher = opts.voucher ?? null;
+    const payment_provider = opts.paymentProvider ?? null;
+
+    await pool
+      .request()
+      .input("paymentId", sql.UniqueIdentifier, paymentId)
+      .input("easykashRef", sql.NVarChar(255), easykashRef)
+      .input("voucher", sql.NVarChar(255), voucher)
+      .input("payment_provider", sql.NVarChar(255), payment_provider)
+      .query(`
+          UPDATE payments 
+          SET 
+            payment_status = 'completed',
+            easykash_ref = COALESCE(@easykashRef, easykash_ref),
+            easykash_product_code = COALESCE(easykash_product_code, @easykashRef),
+            voucher = COALESCE(@voucher, voucher),
+            payment_provider = COALESCE(@payment_provider, payment_provider),
+            updated_at = GETDATE()
+          WHERE id = @paymentId
+        `);
+
+    const orderStatus = "confirmed";
+
+    await pool
+      .request()
+      .input("orderId", sql.UniqueIdentifier, orderId)
+      .input("orderStatus", sql.NVarChar(20), orderStatus)
+      .query(`
+            UPDATE orders 
+            SET 
+              status = @orderStatus,
+              updated_at = GETDATE()
+            WHERE id = @orderId
+          `);
+
+    const orderResult = await pool
+      .request()
+      .input("orderId", sql.UniqueIdentifier, orderId)
+      .query(`
+            SELECT voucher_code FROM orders WHERE id = @orderId
+          `);
+
+    if (orderResult.recordset.length > 0 && orderResult.recordset[0].voucher_code) {
+      const voucherCode = orderResult.recordset[0].voucher_code;
+      try {
+        const v = await VouchersService.getVoucherByCode(voucherCode);
+        if (v && !v.is_used) {
+          await VouchersService.useVoucher(v.id, orderId);
+          console.log(
+            `✅ Voucher ${voucherCode} marked as used after successful payment`
+          );
+        }
+      } catch (voucherError: any) {
+        console.error("Error marking voucher as used:", voucherError);
+      }
+    }
+  }
+
+  /**
+   * If the user returns from EasyKash with a paid status but webhook did not update DB yet, complete the payment.
+   */
+  static async maybeCompleteEasykashFromRedirect(
+    payment: {
+      id: string;
+      order_id: string;
+      payment_method: string;
+      payment_status: string;
+      payment_provider?: string | null;
+    },
+    status: string | null | undefined,
+    providerRefNum?: string | null,
+    voucherFromQuery?: string | null
+  ): Promise<boolean> {
+    if (!this.isBrowserRedirectPaid(status)) {
+      return false;
+    }
+    if (payment.payment_method !== "easykash") {
+      return false;
+    }
+    if (payment.payment_status !== "pending") {
+      return false;
+    }
+
+    console.log(
+      "🔄 Completing EasyKash payment from browser redirect (webhook may have missed or been delayed)"
+    );
+
+    await this.applyEasykashPaymentCompleted(payment.id, payment.order_id, {
+      easykashRef: providerRefNum || null,
+      voucher: voucherFromQuery || null,
+      paymentProvider: payment.payment_provider || null,
+    });
+
+    return true;
+  }
+
   /**
    * Initiate payment with EasyKash
    */
@@ -123,8 +258,12 @@ export class PaymentService {
       // Prepare EasyKash API request
       // Use redirectUrl from request or default to frontend callback page
       const redirectUrl =
-        data.redirectUrl || `${this.FRONTEND_URL}/ar/payment/callback`;
-      const callbackUrl = `${this.BACKEND_URL}/api/payment/easykash/callback`;
+        data.redirectUrl ||
+        this.joinPublicUrl(this.FRONTEND_URL, "/ar/payment/callback");
+      const callbackUrl = this.joinPublicUrl(
+        this.BACKEND_URL,
+        "/api/payment/easykash/callback"
+      );
 
       console.log("═══════════════════════════════════════");
       console.log("🔧 EasyKash Payment Configuration");
@@ -544,18 +683,18 @@ export class PaymentService {
 
       const payment = paymentResult.recordset[0];
 
+      const statusNorm = String(status ?? "").trim().toLowerCase();
+
       // Map EasyKash status to our status
       let paymentStatus: string;
-      let orderStatus: string | null = null;
 
-      switch (status.toLowerCase()) {
+      switch (statusNorm) {
         // Success states
         case "success":
         case "completed":
         case "paid":
         case "delivered": // EasyKash: payment delivered successfully
           paymentStatus = "completed";
-          orderStatus = "confirmed"; // Update order status to confirmed
           break;
 
         // Failed states
@@ -591,18 +730,28 @@ export class PaymentService {
           paymentStatus = "pending";
       }
 
-      // Update payment record
-      await pool
-        .request()
-        .input("paymentId", sql.UniqueIdentifier, customData.paymentId)
-        .input("status", sql.NVarChar(50), paymentStatus)
-        .input("easykashRef", sql.NVarChar(255), transactionId)
-        .input("voucher", sql.NVarChar(255), data.voucher || null)
-        .input(
-          "payment_provider",
-          sql.NVarChar(255),
-          data.PaymentMethod || null
-        ).query(`
+      if (paymentStatus === "completed") {
+        await PaymentService.applyEasykashPaymentCompleted(
+          customData.paymentId,
+          customData.orderId,
+          {
+            easykashRef: transactionId,
+            voucher: data.voucher || null,
+            paymentProvider: data.PaymentMethod || null,
+          }
+        );
+      } else {
+        await pool
+          .request()
+          .input("paymentId", sql.UniqueIdentifier, customData.paymentId)
+          .input("status", sql.NVarChar(50), paymentStatus)
+          .input("easykashRef", sql.NVarChar(255), transactionId)
+          .input("voucher", sql.NVarChar(255), data.voucher || null)
+          .input(
+            "payment_provider",
+            sql.NVarChar(255),
+            data.PaymentMethod || null
+          ).query(`
           UPDATE payments 
           SET 
             payment_status = @status,
@@ -614,51 +763,14 @@ export class PaymentService {
           WHERE id = @paymentId
         `);
 
-      // Update order payment status and status based on payment result
-      if (paymentStatus === "completed") {
-        // Payment successful - mark order as paid
-        await pool
-          .request()
-          .input("orderId", sql.UniqueIdentifier, customData.orderId)
-          .input("orderStatus", sql.NVarChar(20), orderStatus || "paid").query(`
-            UPDATE orders 
-            SET 
-              status = @orderStatus,
-              updated_at = GETDATE()
-            WHERE id = @orderId
-          `);
-
-        // Mark voucher as used only after successful payment
-        const orderResult = await pool
-          .request()
-          .input("orderId", sql.UniqueIdentifier, customData.orderId).query(`
-            SELECT voucher_code FROM orders WHERE id = @orderId
-          `);
-
-        if (orderResult.recordset.length > 0 && orderResult.recordset[0].voucher_code) {
-          const voucherCode = orderResult.recordset[0].voucher_code;
-          try {
-            // Get voucher by code
-            const voucher = await VouchersService.getVoucherByCode(voucherCode);
-            if (voucher && !voucher.is_used) {
-              // Mark voucher as used
-              await VouchersService.useVoucher(voucher.id, customData.orderId);
-              console.log(`✅ Voucher ${voucherCode} marked as used after successful payment`);
-            }
-          } catch (voucherError: any) {
-            // Log error but don't fail the payment callback
-            console.error("Error marking voucher as used:", voucherError);
-          }
-        }
-      } else if (
-        paymentStatus === "failed" ||
-        paymentStatus === "cancelled" ||
-        paymentStatus === "refunded"
-      ) {
-        // Payment failed, cancelled, or refunded - mark order as cancelled if pending
-        await pool
-          .request()
-          .input("orderId", sql.UniqueIdentifier, customData.orderId).query(`
+        if (
+          paymentStatus === "failed" ||
+          paymentStatus === "cancelled" ||
+          paymentStatus === "refunded"
+        ) {
+          await pool
+            .request()
+            .input("orderId", sql.UniqueIdentifier, customData.orderId).query(`
             UPDATE orders 
             SET 
               status = CASE 
@@ -668,6 +780,7 @@ export class PaymentService {
               updated_at = GETDATE()
             WHERE id = @orderId
           `);
+        }
       }
       // Note: If paymentStatus is "pending", we don't update the order
       // to keep it in pending_payment state

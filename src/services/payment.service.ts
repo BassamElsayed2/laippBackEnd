@@ -87,12 +87,16 @@ export class PaymentService {
   }
 
   /**
-   * Return reserved stock when a pending order is cancelled (stock was decremented at order creation).
+   * Decrement product stock for a paid order (same rules as former createOrder Step 5b).
    */
-  private static async restoreStockForOrder(orderId: string): Promise<void> {
-    const pool = getPool();
-    const items = await pool
-      .request()
+  static async decrementStockForOrder(
+    orderId: string,
+    transaction?: sql.Transaction
+  ): Promise<void> {
+    const rq = () =>
+      transaction ? transaction.request() : getPool().request();
+
+    const items = await rq()
       .input("orderId", sql.UniqueIdentifier, orderId)
       .query(`
         SELECT oi.product_id, oi.quantity, p.stock_quantity
@@ -103,22 +107,32 @@ export class PaymentService {
 
     for (const row of items.recordset) {
       if (row.stock_quantity === null) continue;
-      await pool
-        .request()
+
+      const stockResult = await rq()
         .input("product_id", sql.UniqueIdentifier, row.product_id)
         .input("qty", sql.Int, row.quantity)
         .query(`
           UPDATE products
-          SET stock_quantity = stock_quantity + @qty,
+          SET stock_quantity = stock_quantity - @qty,
               updated_at = GETDATE()
-          WHERE id = @product_id AND is_active = 1
+          WHERE id = @product_id
+            AND is_active = 1
+            AND stock_quantity IS NOT NULL
+            AND stock_quantity >= @qty
         `);
+
+      if (stockResult.rowsAffected[0] === 0) {
+        throw new ApiError(
+          400,
+          `Insufficient stock for product: ${row.product_id}`
+        );
+      }
     }
-    console.log(`📦 Stock restored for cancelled/abandoned order ${orderId}`);
+    console.log(`📦 Stock decremented for paid order ${orderId}`);
   }
 
   /**
-   * Cancel pending EasyKash payment + pending order and restore stock (browser returned FAILED, etc.).
+   * Cancel pending EasyKash payment + pending order (browser returned FAILED, etc.).
    */
   static async releasePendingEasykashPayment(payment: {
     id: string;
@@ -157,10 +171,6 @@ export class PaymentService {
         WHERE id = @orderId AND status = 'pending'
       `);
 
-    if (ordUp.rowsAffected[0] > 0) {
-      await this.restoreStockForOrder(payment.order_id);
-    }
-
     console.log("🧹 Released EasyKash reservation (payment + order cancelled)");
     return true;
   }
@@ -182,13 +192,16 @@ export class PaymentService {
     const voucher = opts.voucher ?? null;
     const payment_provider = opts.paymentProvider ?? null;
 
-    await pool
-      .request()
-      .input("paymentId", sql.UniqueIdentifier, paymentId)
-      .input("easykashRef", sql.NVarChar(255), easykashRef)
-      .input("voucher", sql.NVarChar(255), voucher)
-      .input("payment_provider", sql.NVarChar(255), payment_provider)
-      .query(`
+    const trx = pool.transaction();
+    await trx.begin();
+    try {
+      const payUp = await trx
+        .request()
+        .input("paymentId", sql.UniqueIdentifier, paymentId)
+        .input("easykashRef", sql.NVarChar(255), easykashRef)
+        .input("voucher", sql.NVarChar(255), voucher)
+        .input("payment_provider", sql.NVarChar(255), payment_provider)
+        .query(`
           UPDATE payments 
           SET 
             payment_status = 'completed',
@@ -197,22 +210,54 @@ export class PaymentService {
             voucher = COALESCE(@voucher, voucher),
             payment_provider = COALESCE(@payment_provider, payment_provider),
             updated_at = GETDATE()
-          WHERE id = @paymentId
+          WHERE id = @paymentId AND payment_status = N'pending'
         `);
 
-    const orderStatus = "confirmed";
+      if (!payUp.rowsAffected[0]) {
+        await trx.rollback();
+        return;
+      }
 
-    await pool
-      .request()
-      .input("orderId", sql.UniqueIdentifier, orderId)
-      .input("orderStatus", sql.NVarChar(20), orderStatus)
-      .query(`
+      const ordRow = await trx
+        .request()
+        .input("orderId", sql.UniqueIdentifier, orderId)
+        .query(`SELECT status FROM orders WHERE id = @orderId`);
+
+      if (
+        !ordRow.recordset.length ||
+        String(ordRow.recordset[0].status).toLowerCase() !== "pending"
+      ) {
+        await trx.rollback();
+        console.warn(
+          "EasyKash payment completion rolled back: order not pending",
+          orderId
+        );
+        return;
+      }
+
+      await PaymentService.decrementStockForOrder(orderId, trx);
+
+      await trx
+        .request()
+        .input("orderId", sql.UniqueIdentifier, orderId)
+        .input("orderStatus", sql.NVarChar(20), "confirmed")
+        .query(`
             UPDATE orders 
             SET 
               status = @orderStatus,
               updated_at = GETDATE()
-            WHERE id = @orderId
+            WHERE id = @orderId AND status = N'pending'
           `);
+
+      await trx.commit();
+    } catch (e) {
+      try {
+        await trx.rollback();
+      } catch {
+        /* ignore rollback errors */
+      }
+      throw e;
+    }
 
     const orderResult = await pool
       .request()
@@ -863,16 +908,13 @@ export class PaymentService {
           paymentStatus === "cancelled" ||
           paymentStatus === "refunded"
         ) {
-          const ordUp = await pool
+          await pool
             .request()
             .input("orderId", sql.UniqueIdentifier, customData.orderId).query(`
             UPDATE orders 
             SET status = 'cancelled', updated_at = GETDATE()
             WHERE id = @orderId AND status = 'pending'
           `);
-          if (ordUp.rowsAffected[0] > 0) {
-            await PaymentService.restoreStockForOrder(customData.orderId);
-          }
         }
       }
       // Note: If paymentStatus is "pending", we don't update the order
@@ -944,17 +986,13 @@ export class PaymentService {
             WHERE id = @paymentId AND payment_status = 'pending'
           `);
 
-      const ordUp = await pool
+      await pool
         .request()
         .input("orderId", sql.UniqueIdentifier, payment.order_id).query(`
             UPDATE orders 
             SET status = 'cancelled', updated_at = GETDATE()
             WHERE id = @orderId AND status = 'pending'
           `);
-
-      if (ordUp.rowsAffected[0] > 0) {
-        await PaymentService.restoreStockForOrder(payment.order_id);
-      }
 
       payment.payment_status = "cancelled";
     }
@@ -1058,17 +1096,13 @@ export class PaymentService {
           WHERE id = @paymentId
         `);
 
-      const ordUp = await pool
+      await pool
         .request()
         .input("orderId", sql.UniqueIdentifier, payment.order_id).query(`
           UPDATE orders 
           SET status = 'cancelled', updated_at = GETDATE()
           WHERE id = @orderId AND status = 'pending'
         `);
-
-      if (ordUp.rowsAffected[0] > 0) {
-        await PaymentService.restoreStockForOrder(payment.order_id);
-      }
 
       console.log("✅ Payment cancelled successfully");
 

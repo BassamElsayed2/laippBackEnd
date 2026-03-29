@@ -5,6 +5,7 @@ import {
   handlePaymentRedirect,
   getPaymentStatus,
 } from '../controllers/paymentController';
+import { PaymentService } from '../services/payment.service';
 import { optionalAuth } from '../middleware/auth';
 import { validate, initiatePaymentSchema, paymentCallbackSchema } from '../middleware/validation';
 
@@ -53,6 +54,8 @@ router.post('/test/complete/:order_id', async (req, res) => {
         SET status = 'confirmed', updated_at = GETDATE()
         WHERE id = @orderId
       `);
+
+    await PaymentService.decrementStockForOrder(order_id);
     
     res.json({ success: true, message: 'Payment marked as completed' });
   } catch (error: any) {

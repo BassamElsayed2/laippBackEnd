@@ -174,7 +174,7 @@ export const handlePaymentRedirect = asyncHandler(
       message: completedFromRedirect
         ? "Payment confirmed from return URL; order updated."
         : releasedFromRedirect
-          ? "Payment cancelled; order released and stock restored."
+          ? "Payment cancelled; order released."
           : "Payment redirect received. Please wait for final confirmation from payment gateway.",
     });
   }

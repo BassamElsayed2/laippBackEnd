@@ -1,5 +1,36 @@
-import { pool } from "../config/database";
+import { pool, sql, getPool } from "../config/database";
 import { ApiError } from "../middleware/error.middleware";
+
+const INTEGER_SQL_TYPES = new Set([
+  "int",
+  "bigint",
+  "smallint",
+  "tinyint",
+]);
+
+async function getColumnDataType(
+  tableName: string,
+  columnName: string,
+): Promise<string | null> {
+  try {
+    const r = await pool
+      .request()
+      .input("table", sql.NVarChar(128), tableName)
+      .input("column", sql.NVarChar(128), columnName)
+      .query(
+        `SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = N'dbo' AND TABLE_NAME = @table AND COLUMN_NAME = @column`,
+      );
+    const t = r.recordset[0]?.DATA_TYPE as string | undefined;
+    return t ? String(t).toLowerCase() : null;
+  } catch {
+    return null;
+  }
+}
+
+function isIntegerSqlDataType(dataType: string | null): boolean {
+  return dataType != null && INTEGER_SQL_TYPES.has(dataType);
+}
 
 export interface CategoryFilters {
   search?: string;
@@ -161,30 +192,82 @@ export class CategoriesService {
     return await this.getCategoryById(id);
   }
 
-  // Delete category (admin only)
+  // Delete category (admin only): clears product/news links, branch rows, then deletes row
   static async deleteCategory(id: string) {
-    // Check if category has products
-    const productsCheck = await pool
-      .request()
-      .input("id", id)
-      .query("SELECT COUNT(*) as count FROM products WHERE category_id = @id");
-
-    const productCount = productsCheck.recordset[0].count;
-
-    if (productCount > 0) {
-      throw new ApiError(
-        400,
-        `Cannot delete category. It has ${productCount} product(s) associated with it.`
-      );
+    const categoryId = parseInt(id, 10);
+    if (Number.isNaN(categoryId) || categoryId < 1) {
+      throw new ApiError(400, "Invalid category id");
     }
 
-    const result = await pool
+    const existsCheck = await pool
       .request()
-      .input("id", id)
-      .query("DELETE FROM categories WHERE id = @id");
+      .input("id", sql.Int, categoryId)
+      .query("SELECT id FROM categories WHERE id = @id");
 
-    if (result.rowsAffected[0] === 0) {
+    if (existsCheck.recordset.length === 0) {
       throw new ApiError(404, "Category not found");
+    }
+
+    const productsCatType = await getColumnDataType(
+      "products",
+      "category_id",
+    );
+    const newsCatType = await getColumnDataType("news", "category_id");
+    const branchCatType = await getColumnDataType(
+      "branch_categories",
+      "category_id",
+    );
+
+    const productsCategoryIdIsInt = isIntegerSqlDataType(productsCatType);
+    const newsCategoryIdIsInt = isIntegerSqlDataType(newsCatType);
+    const branchCategoryIdIsInt = isIntegerSqlDataType(branchCatType);
+
+    const connection = getPool();
+    const transaction = new sql.Transaction(connection);
+    await transaction.begin();
+    try {
+      if (productsCategoryIdIsInt) {
+        const unlinkProducts = new sql.Request(transaction);
+        await unlinkProducts
+          .input("id", sql.Int, categoryId)
+          .query(
+            "UPDATE products SET category_id = NULL WHERE category_id = @id"
+          );
+      }
+
+      if (newsCategoryIdIsInt) {
+        const unlinkNews = new sql.Request(transaction);
+        await unlinkNews
+          .input("id", sql.Int, categoryId)
+          .query(
+            "UPDATE news SET category_id = NULL WHERE category_id = @id"
+          );
+      }
+
+      if (branchCategoryIdIsInt) {
+        const delBranch = new sql.Request(transaction);
+        await delBranch
+          .input("id", sql.Int, categoryId)
+          .query("DELETE FROM branch_categories WHERE category_id = @id");
+      }
+
+      const delCat = new sql.Request(transaction);
+      const delResult = await delCat
+        .input("id", sql.Int, categoryId)
+        .query("DELETE FROM categories WHERE id = @id");
+
+      if (delResult.rowsAffected[0] === 0) {
+        throw new ApiError(404, "Category not found");
+      }
+
+      await transaction.commit();
+    } catch (e) {
+      try {
+        await transaction.rollback();
+      } catch {
+        /* transaction may already be finished */
+      }
+      throw e;
     }
 
     return { success: true };

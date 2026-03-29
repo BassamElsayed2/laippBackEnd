@@ -9,6 +9,7 @@ import {
   getTotalPages,
 } from "../utils/helpers";
 import { VouchersService } from "../services/vouchers.service";
+import { PaymentService } from "../services/payment.service";
 
 /**
  * Create a new order
@@ -238,36 +239,8 @@ export const createOrder = async (
           `);
       }
 
-      // Step 5b: Decrement stock (atomic; handles concurrent orders)
-      for (const item of validatedItems as Array<{
-        product_id: string;
-        quantity: number;
-        price: number;
-        track_stock: boolean;
-      }>) {
-        if (!item.track_stock) continue;
-
-        const stockResult = await transaction
-          .request()
-          .input("product_id", sql.UniqueIdentifier, item.product_id)
-          .input("qty", sql.Int, item.quantity)
-          .query(`
-            UPDATE products
-            SET stock_quantity = stock_quantity - @qty,
-                updated_at = GETDATE()
-            WHERE id = @product_id
-              AND is_active = 1
-              AND stock_quantity IS NOT NULL
-              AND stock_quantity >= @qty
-          `);
-
-        if (stockResult.rowsAffected[0] === 0) {
-          throw new ApiError(
-            400,
-            `Insufficient stock for product: ${item.product_id}`
-          );
-        }
-      }
+      // Stock is decremented only after successful payment (EasyKash callback/redirect
+      // or COD when order becomes confirmed/paid via admin).
 
       // Step 6: Insert payment record only for COD (Cash on Delivery)
       // For EasyKash, payment record will be created by initiateEasykashPayment service
@@ -573,6 +546,27 @@ export const updateOrderStatus = async (
 
     const pool = getPool();
 
+    const before = await pool
+      .request()
+      .input("id", sql.UniqueIdentifier, id).query(`
+        SELECT o.status,
+          (
+            SELECT TOP 1 payment_method
+            FROM payments p
+            WHERE p.order_id = o.id
+            ORDER BY p.created_at DESC
+          ) AS payment_method
+        FROM orders o
+        WHERE o.id = @id
+      `);
+
+    if (before.recordset.length === 0) {
+      throw new ApiError(404, "Order not found");
+    }
+
+    const prevStatus = before.recordset[0].status as string;
+    const payMethod = (before.recordset[0].payment_method as string) || "";
+
     const result = await pool
       .request()
       .input("id", sql.UniqueIdentifier, id)
@@ -585,6 +579,20 @@ export const updateOrderStatus = async (
 
     if (result.recordset.length === 0) {
       throw new ApiError(404, "Order not found");
+    }
+
+    const codStockOut =
+      payMethod.toLowerCase() === "cod" &&
+      prevStatus === "pending" &&
+      ["paid", "confirmed", "shipped", "delivered"].includes(status);
+
+    if (codStockOut) {
+      try {
+        await PaymentService.decrementStockForOrder(id);
+      } catch (e: any) {
+        console.error("COD stock decrement after status update:", e?.message || e);
+        throw e;
+      }
     }
 
     res.json({

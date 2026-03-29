@@ -138,6 +138,61 @@ export const updateCategory = async (
   }
 };
 
+function isSqlForeignKeyConflict(err: unknown): boolean {
+  const e = err as {
+    number?: number;
+    originalError?: { number?: number };
+    message?: string;
+  };
+  const n = e?.number ?? e?.originalError?.number;
+  if (n === 547) return true;
+  const msg = (e?.message || '').toLowerCase();
+  return (
+    msg.includes('conflicted with the reference') ||
+    msg.includes('foreign key')
+  );
+}
+
+const INTEGER_SQL_TYPES = new Set([
+  'int',
+  'bigint',
+  'smallint',
+  'tinyint',
+]);
+
+async function getColumnDataType(
+  pool: ReturnType<typeof getPool>,
+  tableName: string,
+  columnName: string,
+): Promise<string | null> {
+  try {
+    const r = await pool
+      .request()
+      .input('table', sql.NVarChar(128), tableName)
+      .input('column', sql.NVarChar(128), columnName)
+      .query(
+        `SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = N'dbo' AND TABLE_NAME = @table AND COLUMN_NAME = @column`,
+      );
+    const t = r.recordset[0]?.DATA_TYPE as string | undefined;
+    return t ? String(t).toLowerCase() : null;
+  } catch {
+    return null;
+  }
+}
+
+function isIntegerSqlDataType(dataType: string | null): boolean {
+  return dataType != null && INTEGER_SQL_TYPES.has(dataType);
+}
+
+function getSqlErrorNumber(err: unknown): number | undefined {
+  const e = err as {
+    number?: number;
+    originalError?: { number?: number };
+  };
+  return e?.number ?? e?.originalError?.number;
+}
+
 /**
  * Delete category (Admin only)
  */
@@ -148,23 +203,95 @@ export const deleteCategory = async (
 ) => {
   try {
     const { id } = req.params;
+    const categoryId = parseInt(id, 10);
+    if (Number.isNaN(categoryId) || categoryId < 1) {
+      throw new ApiError(400, 'Invalid category id');
+    }
+
     const pool = getPool();
 
     // Check if category exists
     const checkResult = await pool
       .request()
-      .input('id', sql.Int, parseInt(id))
+      .input('id', sql.Int, categoryId)
       .query('SELECT id FROM categories WHERE id = @id');
 
     if (checkResult.recordset.length === 0) {
       throw new ApiError(404, 'Category not found');
     }
 
-    // Delete category
-    await pool
-      .request()
-      .input('id', sql.Int, parseInt(id))
-      .query('DELETE FROM categories WHERE id = @id');
+    const productsCatType = await getColumnDataType(
+      pool,
+      'products',
+      'category_id',
+    );
+    const newsCatType = await getColumnDataType(pool, 'news', 'category_id');
+    const branchCatType = await getColumnDataType(
+      pool,
+      'branch_categories',
+      'category_id',
+    );
+
+    const productsCategoryIdIsInt = isIntegerSqlDataType(productsCatType);
+    const newsCategoryIdIsInt = isIntegerSqlDataType(newsCatType);
+    const branchCategoryIdIsInt = isIntegerSqlDataType(branchCatType);
+
+    const transaction = new sql.Transaction(pool);
+    await transaction.begin();
+    try {
+      if (productsCategoryIdIsInt) {
+        const unlinkProducts = new sql.Request(transaction);
+        await unlinkProducts
+          .input('id', sql.Int, categoryId)
+          .query(
+            'UPDATE products SET category_id = NULL WHERE category_id = @id',
+          );
+      }
+
+      if (newsCategoryIdIsInt) {
+        const unlinkNews = new sql.Request(transaction);
+        await unlinkNews
+          .input('id', sql.Int, categoryId)
+          .query(
+            'UPDATE news SET category_id = NULL WHERE category_id = @id',
+          );
+      }
+
+      if (branchCategoryIdIsInt) {
+        const delBranch = new sql.Request(transaction);
+        await delBranch
+          .input('id', sql.Int, categoryId)
+          .query('DELETE FROM branch_categories WHERE category_id = @id');
+      }
+
+      const delCat = new sql.Request(transaction);
+      await delCat
+        .input('id', sql.Int, categoryId)
+        .query('DELETE FROM categories WHERE id = @id');
+
+      await transaction.commit();
+    } catch (txErr) {
+      try {
+        await transaction.rollback();
+      } catch {
+        /* noop */
+      }
+      if (isSqlForeignKeyConflict(txErr)) {
+        throw new ApiError(
+          409,
+          'Cannot delete category while other records still reference it. Remove or reassign those records first.',
+        );
+      }
+      const sqlNum = getSqlErrorNumber(txErr);
+      // 245 conversion failed; 515 NULL into NOT NULL
+      if (sqlNum === 245 || sqlNum === 515) {
+        throw new ApiError(
+          400,
+          'Cannot delete category: failed to clear category links. Ensure category_id columns allow NULL where needed.',
+        );
+      }
+      throw txErr;
+    }
 
     res.json({
       success: true,

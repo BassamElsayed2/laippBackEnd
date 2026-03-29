@@ -145,9 +145,20 @@ export const handlePaymentRedirect = asyncHandler(
         (voucher as string) || undefined
       );
 
+    let releasedFromRedirect = false;
+    if (
+      !completedFromRedirect &&
+      PaymentService.isBrowserRedirectFailed(status as string)
+    ) {
+      releasedFromRedirect =
+        await PaymentService.releasePendingEasykashPayment(payment);
+    }
+
     const paymentStatusOut = completedFromRedirect
       ? "completed"
-      : payment.payment_status;
+      : releasedFromRedirect
+        ? "cancelled"
+        : payment.payment_status;
 
     res.json({
       success: true,
@@ -158,10 +169,13 @@ export const handlePaymentRedirect = asyncHandler(
         providerRefNum: providerRefNum || null,
         voucher: voucher || null,
         synced_from_redirect: completedFromRedirect,
+        released_from_redirect: releasedFromRedirect,
       },
       message: completedFromRedirect
         ? "Payment confirmed from return URL; order updated."
-        : "Payment redirect received. Please wait for final confirmation from payment gateway.",
+        : releasedFromRedirect
+          ? "Payment cancelled; order released and stock restored."
+          : "Payment redirect received. Please wait for final confirmation from payment gateway.",
     });
   }
 );

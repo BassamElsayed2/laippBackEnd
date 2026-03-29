@@ -70,6 +70,101 @@ export class PaymentService {
     );
   }
 
+  /** EasyKash return URL when user cancels or payment fails */
+  static isBrowserRedirectFailed(status: string | null | undefined): boolean {
+    const s = String(status ?? "")
+      .trim()
+      .toLowerCase();
+    return (
+      s === "failed" ||
+      s === "failure" ||
+      s === "declined" ||
+      s === "cancelled" ||
+      s === "canceled" ||
+      s === "refunded" ||
+      s === "expired"
+    );
+  }
+
+  /**
+   * Return reserved stock when a pending order is cancelled (stock was decremented at order creation).
+   */
+  private static async restoreStockForOrder(orderId: string): Promise<void> {
+    const pool = getPool();
+    const items = await pool
+      .request()
+      .input("orderId", sql.UniqueIdentifier, orderId)
+      .query(`
+        SELECT oi.product_id, oi.quantity, p.stock_quantity
+        FROM order_items oi
+        INNER JOIN products p ON p.id = oi.product_id
+        WHERE oi.order_id = @orderId
+      `);
+
+    for (const row of items.recordset) {
+      if (row.stock_quantity === null) continue;
+      await pool
+        .request()
+        .input("product_id", sql.UniqueIdentifier, row.product_id)
+        .input("qty", sql.Int, row.quantity)
+        .query(`
+          UPDATE products
+          SET stock_quantity = stock_quantity + @qty,
+              updated_at = GETDATE()
+          WHERE id = @product_id AND is_active = 1
+        `);
+    }
+    console.log(`📦 Stock restored for cancelled/abandoned order ${orderId}`);
+  }
+
+  /**
+   * Cancel pending EasyKash payment + pending order and restore stock (browser returned FAILED, etc.).
+   */
+  static async releasePendingEasykashPayment(payment: {
+    id: string;
+    order_id: string;
+    payment_method: string;
+    payment_status: string;
+  }): Promise<boolean> {
+    if (payment.payment_method !== "easykash") {
+      return false;
+    }
+    if (payment.payment_status !== "pending") {
+      return false;
+    }
+
+    const pool = getPool();
+
+    const payUp = await pool
+      .request()
+      .input("id", sql.UniqueIdentifier, payment.id)
+      .query(`
+        UPDATE payments
+        SET payment_status = 'cancelled', updated_at = GETDATE()
+        WHERE id = @id AND payment_status = 'pending'
+      `);
+
+    if (!payUp.rowsAffected[0]) {
+      return false;
+    }
+
+    const ordUp = await pool
+      .request()
+      .input("orderId", sql.UniqueIdentifier, payment.order_id)
+      .query(`
+        UPDATE orders
+        SET status = 'cancelled', updated_at = GETDATE()
+        WHERE id = @orderId AND status = 'pending'
+      `);
+
+    if (ordUp.rowsAffected[0] > 0) {
+      await this.restoreStockForOrder(payment.order_id);
+    }
+
+    console.log("🧹 Released EasyKash reservation (payment + order cancelled)");
+    return true;
+  }
+
   /**
    * Mark EasyKash payment completed and confirm order (shared by webhook + browser redirect).
    */
@@ -768,18 +863,16 @@ export class PaymentService {
           paymentStatus === "cancelled" ||
           paymentStatus === "refunded"
         ) {
-          await pool
+          const ordUp = await pool
             .request()
             .input("orderId", sql.UniqueIdentifier, customData.orderId).query(`
             UPDATE orders 
-            SET 
-              status = CASE 
-                WHEN status = 'pending' THEN 'cancelled'
-                ELSE status 
-              END,
-              updated_at = GETDATE()
-            WHERE id = @orderId
+            SET status = 'cancelled', updated_at = GETDATE()
+            WHERE id = @orderId AND status = 'pending'
           `);
+          if (ordUp.rowsAffected[0] > 0) {
+            await PaymentService.restoreStockForOrder(customData.orderId);
+          }
         }
       }
       // Note: If paymentStatus is "pending", we don't update the order
@@ -851,19 +944,17 @@ export class PaymentService {
             WHERE id = @paymentId AND payment_status = 'pending'
           `);
 
-      // Update order if still pending
-      await pool
+      const ordUp = await pool
         .request()
         .input("orderId", sql.UniqueIdentifier, payment.order_id).query(`
             UPDATE orders 
-            SET 
-              status = CASE 
-                WHEN status = 'pending' THEN 'cancelled'
-                ELSE status 
-              END,
-              updated_at = GETDATE()
+            SET status = 'cancelled', updated_at = GETDATE()
             WHERE id = @orderId AND status = 'pending'
           `);
+
+      if (ordUp.rowsAffected[0] > 0) {
+        await PaymentService.restoreStockForOrder(payment.order_id);
+      }
 
       payment.payment_status = "cancelled";
     }
@@ -967,19 +1058,17 @@ export class PaymentService {
           WHERE id = @paymentId
         `);
 
-      // Update order status to cancelled if pending
-      await pool
+      const ordUp = await pool
         .request()
         .input("orderId", sql.UniqueIdentifier, payment.order_id).query(`
           UPDATE orders 
-          SET 
-            status = CASE 
-              WHEN status = 'pending' THEN 'cancelled'
-              ELSE status 
-            END,
-            updated_at = GETDATE()
-          WHERE id = @orderId
+          SET status = 'cancelled', updated_at = GETDATE()
+          WHERE id = @orderId AND status = 'pending'
         `);
+
+      if (ordUp.rowsAffected[0] > 0) {
+        await PaymentService.restoreStockForOrder(payment.order_id);
+      }
 
       console.log("✅ Payment cancelled successfully");
 

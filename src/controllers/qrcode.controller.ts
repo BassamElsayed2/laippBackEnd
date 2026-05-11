@@ -7,24 +7,10 @@ import { AuthRequest } from "../types";
 import fs from "fs";
 import path from "path";
 
+import { buildPublicUploadUrl } from "../utils/publicUploadUrl";
+
 const UPLOADS_DIR = path.join(process.cwd(), "uploads");
 const QR_FOLDER = "qrcodes";
-
-function getPublicUrl(filePath: string, req?: Request | AuthRequest): string {
-  if (req) {
-    const protocol =
-      (req.headers["x-forwarded-proto"] as string) || req.protocol || "http";
-    const host = req.headers["x-forwarded-host"] || req.get("host");
-    if (host) {
-      return `${protocol}://${host}/uploads/${filePath.replace(/\\/g, "/")}`;
-    }
-  }
-  const apiUrl =
-    process.env.API_URL ||
-    `http://localhost:${process.env.PORT || 5000}`;
-  return `${apiUrl}/uploads/${filePath.replace(/\\/g, "/")}`;
-}
-
 
 export const qrcodeController = {
   // Generate QR Code for a branch
@@ -117,7 +103,7 @@ export const qrcodeController = {
       fs.writeFileSync(diskPath, qrBuffer);
 
       const storagePath = `${QR_FOLDER}/${filename}`;
-      const qrCodeUrl = getPublicUrl(storagePath, req);
+      const qrCodeUrl = buildPublicUploadUrl(storagePath, req);
 
       logger.info(
         `QR Code saved: ${qrCodeUrl} (path: ${storagePath})`

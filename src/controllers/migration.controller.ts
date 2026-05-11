@@ -6,14 +6,9 @@ import path from "path";
 import fs from "fs";
 import https from "https";
 import http from "http";
+import { buildPublicUploadUrl } from "../utils/publicUploadUrl";
 
 const UPLOADS_DIR = path.join(process.cwd(), "uploads");
-
-function getPublicUrl(filePath: string): string {
-  const apiUrl =
-    process.env.API_URL || `http://localhost:${process.env.PORT || 5000}`;
-  return `${apiUrl}/uploads/${filePath.replace(/\\/g, "/")}`;
-}
 
 function isSupabaseUrl(url: string): boolean {
   return typeof url === "string" && url.includes("supabase.co");
@@ -70,7 +65,7 @@ async function migrateImageUrl(
     const diskPath = path.join(folderPath, fileName);
     fs.writeFileSync(diskPath, buffer);
 
-    return getPublicUrl(`${folder}/${fileName}`);
+    return buildPublicUploadUrl(`${folder}/${fileName}`);
   } catch (error: any) {
     console.error(`Failed to migrate image: ${imageUrl}`, error.message);
     return null;

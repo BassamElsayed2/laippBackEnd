@@ -2,6 +2,7 @@ import sharp from "sharp";
 import fs from "fs";
 import path from "path";
 import { ApiError } from "../middleware/error.middleware";
+import { buildPublicUploadUrl } from "../utils/publicUploadUrl";
 
 export class UploadService {
   // Process and optimize image
@@ -76,9 +77,6 @@ export class UploadService {
 
   // Get file URL
   static getFileUrl(filePath: string): string {
-    const uploadsDir = process.env.UPLOAD_DIR || "./uploads";
-    const apiUrl = process.env.API_URL;
-
     // Convert backslashes to forward slashes
     let relativePath = filePath.replace(/\\/g, "/");
 
@@ -92,7 +90,6 @@ export class UploadService {
     // Remove leading slashes
     relativePath = relativePath.replace(/^\/+/, "");
 
-    // Return URL with single /uploads/ prefix
-    return `${apiUrl}/uploads/${relativePath}`;
+    return buildPublicUploadUrl(relativePath);
   }
 }

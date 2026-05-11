@@ -5,6 +5,7 @@ import path from 'path';
 import fs from 'fs';
 import { AuthRequest } from '../types';
 import { ApiError } from '../middleware/errorHandler';
+import { buildPublicUploadUrl } from '../utils/publicUploadUrl';
 
 const UPLOADS_DIR = path.join(process.cwd(), 'uploads');
 
@@ -26,18 +27,6 @@ export const upload = multer({
     cb(null, true);
   },
 });
-
-function getPublicUrl(filePath: string, req?: any): string {
-  if (req) {
-    const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http';
-    const host = req.headers['x-forwarded-host'] || req.get('host');
-    if (host) {
-      return `${protocol}://${host}/uploads/${filePath.replace(/\\/g, '/')}`;
-    }
-  }
-  const apiUrl = process.env.API_URL || `http://localhost:${process.env.PORT || 5000}`;
-  return `${apiUrl}/uploads/${filePath.replace(/\\/g, '/')}`;
-}
 
 export const uploadFile = async (
   req: AuthRequest,
@@ -64,7 +53,7 @@ export const uploadFile = async (
     fs.writeFileSync(diskPath, file.buffer);
 
     const filePath = `${folder}/${fileName}`;
-    const publicUrl = getPublicUrl(filePath, req);
+    const publicUrl = buildPublicUploadUrl(filePath, req);
 
     res.json({
       success: true,
@@ -109,7 +98,7 @@ export const uploadMultipleFiles = async (
       fs.writeFileSync(diskPath, file.buffer);
 
       const filePath = `${folder}/${fileName}`;
-      const publicUrl = getPublicUrl(filePath, req);
+      const publicUrl = buildPublicUploadUrl(filePath, req);
 
       uploadedFiles.push({
         url: publicUrl,

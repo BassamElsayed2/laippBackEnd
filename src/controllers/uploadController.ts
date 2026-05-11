@@ -15,10 +15,13 @@ if (!fs.existsSync(UPLOADS_DIR)) {
 
 const storage = multer.memoryStorage();
 
+/** Must stay in sync with CP file picker limits (e.g. create-news uses 50MB). */
+const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+
 export const upload = multer({
   storage,
   limits: {
-    fileSize: 5 * 1024 * 1024,
+    fileSize: MAX_UPLOAD_BYTES,
   },
   fileFilter: (req, file, cb) => {
     if (!file.mimetype.startsWith('image/')) {

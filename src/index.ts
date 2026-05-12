@@ -85,28 +85,25 @@ function isHttpsLapipHostedOrigin(origin: string): boolean {
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow requests with no origin only in development (like mobile apps or curl requests)
-      if (!origin && process.env.NODE_ENV === "development") {
+      // Direct tab open, <img>, crawlers, Next/Image optimizer often omit Origin — must not 403 JSON
+      if (!origin) {
         return callback(null, true);
       }
 
-      const requestOrigin = origin ? normalizeOriginUrl(origin) : origin;
+      const requestOrigin = normalizeOriginUrl(origin);
       if (
-        requestOrigin &&
-        (allowedOrigins.includes(requestOrigin) ||
-          isHttpsLapipHostedOrigin(requestOrigin))
+        allowedOrigins.includes(requestOrigin) ||
+        isHttpsLapipHostedOrigin(requestOrigin)
       ) {
         callback(null, true);
       } else if (
         process.env.NODE_ENV === "development" &&
-        requestOrigin &&
         /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(requestOrigin)
       ) {
         // Local CP (e.g. http://localhost:3000) → local API without listing every port in CORS_ORIGIN
         callback(null, true);
       } else {
         console.warn(`CORS blocked origin: ${origin}`);
-        // Reject unauthorized origins
         callback(new Error("Not allowed by CORS"));
       }
     },

@@ -52,12 +52,17 @@ app.use(
 const normalizeOriginUrl = (value: string) =>
   value.trim().replace(/\/+$/, "");
 
+/** Always allow these; CORS_ORIGIN adds more (does not replace — avoids prod break when env omits cp host). */
+const DEFAULT_CORS_ORIGINS = ["https://lapip.net", "https://cp.lapip.net"] as const;
+
 const allowedOrigins = [
-  ...(process.env.CORS_ORIGIN
-    ? process.env.CORS_ORIGIN.split(",")
-        .map(normalizeOriginUrl)
-        .filter(Boolean)
-    : ["https://lapip.net", "https://cp.lapip.net"]),
+  ...new Set([
+    ...DEFAULT_CORS_ORIGINS,
+    ...(process.env.CORS_ORIGIN || "")
+      .split(",")
+      .map(normalizeOriginUrl)
+      .filter(Boolean),
+  ]),
 ];
 
 app.use(

@@ -53,7 +53,11 @@ const normalizeOriginUrl = (value: string) =>
   value.trim().replace(/\/+$/, "");
 
 /** Always allow these; CORS_ORIGIN adds more (does not replace — avoids prod break when env omits cp host). */
-const DEFAULT_CORS_ORIGINS = ["https://lapip.net", "https://cp.lapip.net"] as const;
+const DEFAULT_CORS_ORIGINS = [
+  "https://lapip.net",
+  "https://cp.lapip.net",
+  "https://api.lapip.net",
+] as const;
 
 const allowedOrigins = [
   ...new Set([
@@ -65,6 +69,19 @@ const allowedOrigins = [
   ]),
 ];
 
+/** Any https://*.lapip.net or https://lapip.net — avoids prod break when CP moves to a new subdomain. Opt out: CORS_STRICT_LAPIP=1 */
+function isHttpsLapipHostedOrigin(origin: string): boolean {
+  if (process.env.CORS_STRICT_LAPIP === "1") return false;
+  try {
+    const u = new URL(origin);
+    if (u.protocol !== "https:") return false;
+    const h = u.hostname.toLowerCase();
+    return h === "lapip.net" || h.endsWith(".lapip.net");
+  } catch {
+    return false;
+  }
+}
+
 app.use(
   cors({
     origin: (origin, callback) => {
@@ -74,7 +91,11 @@ app.use(
       }
 
       const requestOrigin = origin ? normalizeOriginUrl(origin) : origin;
-      if (requestOrigin && allowedOrigins.includes(requestOrigin)) {
+      if (
+        requestOrigin &&
+        (allowedOrigins.includes(requestOrigin) ||
+          isHttpsLapipHostedOrigin(requestOrigin))
+      ) {
         callback(null, true);
       } else if (
         process.env.NODE_ENV === "development" &&

@@ -2,8 +2,9 @@
  * Builds absolute URLs for files served at GET /uploads/...
  * Static files live at the server root, not under /api — never append API_URL with a /api path.
  *
- * Production: set API_URL or BACKEND_URL to the public API origin (e.g. https://lapip.net or https://api.example.com).
- * Optional override: PUBLIC_UPLOAD_BASE_URL or ASSET_PUBLIC_URL (same host as uploads).
+ * Priority: PUBLIC_UPLOAD_BASE_URL / ASSET_PUBLIC_URL → then API_URL / BACKEND_URL origin.
+ * If the configured origin is exactly https://lapip.net, defaults to https://api.lapip.net for
+ * upload URLs (nginx usually serves files on the api host). Opt out: PUBLIC_UPLOAD_USE_API_SUBDOMAIN=0
  */
 function trimUrl(raw: string): string {
   return raw.trim().replace(/\/+$/, "");
@@ -19,18 +20,29 @@ function originFromUrl(raw: string | undefined): string | null {
   }
 }
 
+/** Apex lapip.net → uploads on api subdomain unless explicitly disabled. */
+function defaultUploadsOriginFromApiLikeUrl(origin: string): string {
+  if (process.env.PUBLIC_UPLOAD_USE_API_SUBDOMAIN === "0") {
+    return origin;
+  }
+  if (/^https:\/\/lapip\.net$/i.test(origin)) {
+    return "https://api.lapip.net";
+  }
+  return origin;
+}
+
 /** Public origin (protocol + host + port) where /uploads is mounted. */
 export function getUploadsPublicOrigin(): string | null {
   const dedicated =
     process.env.PUBLIC_UPLOAD_BASE_URL || process.env.ASSET_PUBLIC_URL;
   if (dedicated) {
     const o = originFromUrl(dedicated);
-    if (o) return o;
+    if (o) return defaultUploadsOriginFromApiLikeUrl(o);
   }
   const fromApi = originFromUrl(process.env.API_URL);
-  if (fromApi) return fromApi;
+  if (fromApi) return defaultUploadsOriginFromApiLikeUrl(fromApi);
   const fromBackend = originFromUrl(process.env.BACKEND_URL);
-  if (fromBackend) return fromBackend;
+  if (fromBackend) return defaultUploadsOriginFromApiLikeUrl(fromBackend);
   return null;
 }
 
@@ -74,7 +86,10 @@ export function buildPublicUploadUrl(filePath: string, req?: ReqLike): string {
       (typeof req.get === "function" ? req.get("host") : undefined);
     if (host) {
       const p = String(proto).split(",")[0].trim() || "http";
-      return `${p}://${host}/uploads/${rel}`;
+      const hostOnly = host.split(":")[0];
+      const originFromReq = `${p}://${hostOnly}`;
+      const publicOrigin = defaultUploadsOriginFromApiLikeUrl(originFromReq);
+      return `${publicOrigin.replace(/\/+$/, "")}/uploads/${rel}`;
     }
   }
 
